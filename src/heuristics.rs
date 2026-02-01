@@ -1,6 +1,12 @@
 use memchr;
 use std::path::Path;
 
+#[cfg(feature = "js-ast")]
+use std::sync::OnceLock;
+
+#[cfg(feature = "js-ast")]
+use tree_sitter::Language;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowMode {
     Off,
@@ -125,7 +131,8 @@ pub fn analyze_flow_context_with_mode(bytes: &[u8], pos: usize, mode: FlowMode) 
     match mode {
         FlowMode::Off => None,
         FlowMode::Heuristic => Some(analyze_flow_context(bytes, pos)),
-        FlowMode::JsAst => analyze_flow_context_js(bytes, pos),
+        FlowMode::JsAst => analyze_flow_context_js(bytes, pos)
+            .or_else(|| Some(analyze_flow_context(bytes, pos))),
     }
 }
 
@@ -746,11 +753,69 @@ fn extract_extension_from_hint(hint: &str) -> Option<String> {
 
 #[cfg(feature = "js-ast")]
 fn analyze_flow_context_js(bytes: &[u8], pos: usize) -> Option<FlowContext> {
-    use tree_sitter::Parser;
+    use std::cell::RefCell;
+    use tree_sitter::{Parser, Query, Range};
 
-    let mut parser = Parser::new();
-    parser.set_language(tree_sitter_javascript::language()).ok()?;
-    let tree = parser.parse(bytes, None)?;
+    thread_local! {
+        static PARSER: RefCell<Parser> = {
+            let mut parser = Parser::new();
+            let _ = parser.set_language(js_language());
+            RefCell::new(parser)
+        };
+    }
+
+    static FUNC_QUERY: OnceLock<Result<Query, tree_sitter::QueryError>> = OnceLock::new();
+    static CTRL_QUERY: OnceLock<Result<Query, tree_sitter::QueryError>> = OnceLock::new();
+    static ASSIGN_QUERY: OnceLock<Result<Query, tree_sitter::QueryError>> = OnceLock::new();
+
+    let func_query = FUNC_QUERY.get_or_init(|| {
+        Query::new(
+            js_language(),
+            "(function_declaration name: (identifier) @name) @func\
+             (method_definition name: (property_identifier) @name) @func\
+             (function_expression name: (identifier) @name) @func\
+             (arrow_function) @func",
+        )
+    });
+    let ctrl_query = CTRL_QUERY.get_or_init(|| {
+        Query::new(
+            js_language(),
+            "(if_statement) @ctrl\
+             (for_statement) @ctrl\
+             (for_in_statement) @ctrl\
+             (while_statement) @ctrl\
+             (do_statement) @ctrl\
+             (switch_statement) @ctrl\
+             (try_statement) @ctrl\
+             (catch_clause) @ctrl\
+             (return_statement) @ctrl",
+        )
+    });
+    let assign_query = ASSIGN_QUERY.get_or_init(|| {
+        Query::new(
+            js_language(),
+            "(assignment_expression) @assign (variable_declarator) @assign",
+        )
+    });
+
+    let window = 4096usize;
+    let start = pos.saturating_sub(window);
+    let end = (pos + window).min(bytes.len());
+    let start_point = byte_to_point(bytes, start);
+    let end_point = byte_to_point(bytes, end);
+    let range = Range {
+        start_byte: start,
+        end_byte: end,
+        start_point,
+        end_point,
+    };
+
+    let tree = PARSER.with(|parser| {
+        let mut parser = parser.borrow_mut();
+        let _ = parser.set_included_ranges(&[range]);
+        parser.parse(bytes, None)
+    })?;
+
     let root = tree.root_node();
     let node = root.descendant_for_byte_range(pos, pos)?;
 
@@ -766,24 +831,30 @@ fn analyze_flow_context_js(bytes: &[u8], pos: usize) -> Option<FlowContext> {
     }
     ctx.block_depth = depth;
 
-    if let Some((func_node, name)) = find_js_enclosing_function(node, bytes) {
-        ctx.scope_kind = Some("function".to_string());
-        ctx.scope_name = name;
-        let start = func_node.start_position();
-        ctx.scope_line = Some(start.row + 1);
-        ctx.scope_col = Some(start.column + 1);
-        ctx.scope_distance = Some(pos.saturating_sub(func_node.start_byte()));
+    if let Ok(func_query) = func_query {
+        if let Some((func_node, name)) = find_js_enclosing_function(root, node, bytes, func_query) {
+            ctx.scope_kind = Some("function".to_string());
+            ctx.scope_name = name;
+            let start = func_node.start_position();
+            ctx.scope_line = Some(start.row + 1);
+            ctx.scope_col = Some(start.column + 1);
+            ctx.scope_distance = Some(pos.saturating_sub(func_node.start_byte()));
+        }
     }
 
-    if let Some(ctrl_node) = find_js_control_ancestor(node) {
-        ctx.nearest_control = Some(ctrl_node.kind().to_string());
-        let start = ctrl_node.start_position();
-        ctx.nearest_control_line = Some(start.row + 1);
-        ctx.nearest_control_col = Some(start.column + 1);
+    if let Ok(ctrl_query) = ctrl_query {
+        if let Some(ctrl_node) = find_js_control_ancestor(root, node, bytes, ctrl_query) {
+            ctx.nearest_control = Some(ctrl_node.kind().to_string());
+            let start = ctrl_node.start_position();
+            ctx.nearest_control_line = Some(start.row + 1);
+            ctx.nearest_control_col = Some(start.column + 1);
+        }
     }
 
-    if let Some(assign) = find_js_assignment_ancestor(node) {
-        ctx.assignment_distance = Some(pos.saturating_sub(assign.start_byte()));
+    if let Ok(assign_query) = assign_query {
+        if let Some(assign) = find_js_assignment_ancestor(root, node, bytes, assign_query) {
+            ctx.assignment_distance = Some(pos.saturating_sub(assign.start_byte()));
+        }
     }
 
     if let Some(ret) = find_js_return_ancestor(node) {
@@ -797,6 +868,14 @@ fn analyze_flow_context_js(bytes: &[u8], pos: usize) -> Option<FlowContext> {
     Some(ctx)
 }
 
+#[cfg(feature = "js-ast")]
+static JS_LANGUAGE: OnceLock<Language> = OnceLock::new();
+
+#[cfg(feature = "js-ast")]
+fn js_language() -> &'static Language {
+    JS_LANGUAGE.get_or_init(|| tree_sitter_javascript::LANGUAGE.into())
+}
+
 #[cfg(not(feature = "js-ast"))]
 fn analyze_flow_context_js(_bytes: &[u8], _pos: usize) -> Option<FlowContext> {
     None
@@ -804,85 +883,79 @@ fn analyze_flow_context_js(_bytes: &[u8], _pos: usize) -> Option<FlowContext> {
 
 #[cfg(feature = "js-ast")]
 fn find_js_enclosing_function<'a>(
+    root: tree_sitter::Node<'a>,
     node: tree_sitter::Node<'a>,
     bytes: &'a [u8],
+    query: &tree_sitter::Query,
 ) -> Option<(tree_sitter::Node<'a>, Option<String>)> {
-    let mut cursor = Some(node);
-    while let Some(n) = cursor {
-        if matches!(
-            n.kind(),
-            "function_declaration"
-                | "function"
-                | "function_expression"
-                | "method_definition"
-                | "arrow_function"
-        ) {
-            let name = js_function_name(n, bytes);
-            return Some((n, name));
-        }
-        cursor = n.parent();
-    }
-    None
-}
-
-#[cfg(feature = "js-ast")]
-fn js_function_name<'a>(node: tree_sitter::Node<'a>, bytes: &'a [u8]) -> Option<String> {
-    if let Some(name) = node.child_by_field_name("name") {
-        return Some(node_text(bytes, name));
-    }
-
-    if node.kind() == "arrow_function" || node.kind() == "function_expression" {
-        if let Some(parent) = node.parent() {
-            if parent.kind() == "variable_declarator" {
-                if let Some(name) = parent.child_by_field_name("name") {
-                    return Some(node_text(bytes, name));
-                }
-            }
-            if parent.kind() == "assignment_expression" {
-                if let Some(left) = parent.child_by_field_name("left") {
-                    return Some(node_text(bytes, left));
-                }
+    use tree_sitter::StreamingIterator;
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut best: Option<(tree_sitter::Node<'a>, Option<String>, usize)> = None;
+    let mut matches = cursor.matches(query, root, bytes);
+    while let Some(m) = matches.next() {
+        let func_node = m.captures.iter().find(|c| c.node.kind().contains("function") || c.node.kind() == "method_definition").map(|c| c.node).unwrap_or_else(|| m.captures[0].node);
+        let name = m
+            .captures
+            .iter()
+            .find(|c| c.node.kind() == "identifier" || c.node.kind() == "property_identifier")
+            .map(|c| node_text(bytes, c.node));
+        let start = func_node.start_byte();
+        if start <= node.start_byte() {
+            let dist = node.start_byte().saturating_sub(start);
+            if best.as_ref().map(|(_, _, d)| dist < *d).unwrap_or(true) {
+                best = Some((func_node, name, dist));
             }
         }
     }
-
-    None
+    best.map(|(n, name, _)| (n, name))
 }
 
 #[cfg(feature = "js-ast")]
-fn find_js_control_ancestor<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
-    let mut cursor = Some(node);
-    while let Some(n) = cursor {
-        if matches!(
-            n.kind(),
-            "if_statement"
-                | "for_statement"
-                | "for_in_statement"
-                | "for_of_statement"
-                | "while_statement"
-                | "do_statement"
-                | "switch_statement"
-                | "try_statement"
-                | "catch_clause"
-                | "return_statement"
-        ) {
-            return Some(n);
+fn find_js_control_ancestor<'a>(
+    root: tree_sitter::Node<'a>,
+    node: tree_sitter::Node<'a>,
+    bytes: &'a [u8],
+    query: &tree_sitter::Query,
+) -> Option<tree_sitter::Node<'a>> {
+    use tree_sitter::StreamingIterator;
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut best: Option<(tree_sitter::Node<'a>, usize)> = None;
+    let mut matches = cursor.matches(query, root, bytes);
+    while let Some(m) = matches.next() {
+        let ctrl_node = m.captures[0].node;
+        let start = ctrl_node.start_byte();
+        if start <= node.start_byte() {
+            let dist = node.start_byte().saturating_sub(start);
+            if best.as_ref().map(|(_, d)| dist < *d).unwrap_or(true) {
+                best = Some((ctrl_node, dist));
+            }
         }
-        cursor = n.parent();
     }
-    None
+    best.map(|(n, _)| n)
 }
 
 #[cfg(feature = "js-ast")]
-fn find_js_assignment_ancestor<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
-    let mut cursor = Some(node);
-    while let Some(n) = cursor {
-        if n.kind() == "assignment_expression" || n.kind() == "variable_declarator" {
-            return Some(n);
+fn find_js_assignment_ancestor<'a>(
+    root: tree_sitter::Node<'a>,
+    node: tree_sitter::Node<'a>,
+    bytes: &'a [u8],
+    query: &tree_sitter::Query,
+) -> Option<tree_sitter::Node<'a>> {
+    use tree_sitter::StreamingIterator;
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut best: Option<(tree_sitter::Node<'a>, usize)> = None;
+    let mut matches = cursor.matches(query, root, bytes);
+    while let Some(m) = matches.next() {
+        let assign_node = m.captures[0].node;
+        let start = assign_node.start_byte();
+        if start <= node.start_byte() {
+            let dist = node.start_byte().saturating_sub(start);
+            if best.as_ref().map(|(_, d)| dist < *d).unwrap_or(true) {
+                best = Some((assign_node, dist));
+            }
         }
-        cursor = n.parent();
     }
-    None
+    best.map(|(n, _)| n)
 }
 
 #[cfg(feature = "js-ast")]
@@ -921,6 +994,22 @@ fn find_js_call_chain<'a>(node: tree_sitter::Node<'a>, bytes: &'a [u8]) -> Optio
 fn node_text<'a>(bytes: &'a [u8], node: tree_sitter::Node<'a>) -> String {
     let range = node.byte_range();
     String::from_utf8_lossy(&bytes[range]).to_string()
+}
+
+#[cfg(feature = "js-ast")]
+fn byte_to_point(bytes: &[u8], pos: usize) -> tree_sitter::Point {
+    let mut row = 0usize;
+    let mut col = 0usize;
+    let end = pos.min(bytes.len());
+    for &b in &bytes[..end] {
+        if b == b'\n' {
+            row += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    tree_sitter::Point { row, column: col }
 }
 
 fn trim_value(value: &str, max_len: usize) -> String {

@@ -76,24 +76,43 @@ pub fn process_search(
         let pretty = format_prettified(&raw_snippet, matched_word);
         let _ = writeln!(out, "{}", pretty);
 
+        let identifier = find_preceding_identifier(bytes, pos);
+
         if deep_scan {
             if let Some(stats) = word_stats.get(matched_word) {
                 let occ_index = stats.occurrence_index(pos);
                 let neighbor_dist = stats.nearest_neighbor_distance(pos);
                 let (call_sites, nearest_call) = stats.call_sites_info(bytes, pos);
+                let span = stats.positions.last().zip(stats.positions.first()).map(|(l, f)| l.saturating_sub(*f));
+                let density = (stats.positions.len() * 1024) / bytes.len().max(1);
+                let id_hint = identifier
+                    .as_deref()
+                    .map(|id| format!("; id {}", id))
+                    .unwrap_or_default();
+                let (signals, confidence) = keyword_context_signals(&raw_snippet, identifier.as_deref(), matched_word);
+                let signals_str = if signals.is_empty() {
+                    "signals n/a".to_string()
+                } else {
+                    format!("signals {}", signals.join(","))
+                };
 
                 let _ = writeln!(
                     out,
-                    "Story: appears {} times; occurrence {}/{}; nearest neighbor {} bytes away; call-sites {}{}",
+                    "Story: appears {} times; occurrence {}/{}; nearest neighbor {} bytes away; call-sites {}; span {} bytes; density {}/KiB; {}; conf {}/10{}{}",
                     stats.positions.len(),
                     occ_index + 1,
                     stats.positions.len(),
                     neighbor_dist.map(|d| d.to_string()).unwrap_or_else(|| "n/a".to_string()),
                     call_sites,
+                    span.map(|d| d.to_string()).unwrap_or_else(|| "n/a".to_string()),
+                    density,
+                    signals_str,
+                    confidence,
                     match nearest_call {
                         Some((line, col, dist)) => format!("; nearest call at L:{} C:{} ({} bytes)", line, col, dist),
                         None => "; no call-sites detected".to_string(),
-                    }
+                    },
+                    id_hint
                 );
             }
         }
@@ -108,7 +127,6 @@ pub fn process_search(
 
         let _ = writeln!(out, "{}", "─".repeat(40).dimmed());
 
-        let identifier = find_preceding_identifier(bytes, pos);
         records.push(MatchRecord {
             source: label.to_string(),
             kind: "keyword".to_string(),
@@ -219,5 +237,38 @@ fn line_col(bytes: &[u8], pos: usize) -> (usize, usize) {
     let last_nl = preceding.iter().rposition(|&b| b == b'\n').unwrap_or(0);
     let col = if last_nl == 0 { pos } else { pos - last_nl };
     (line, col)
+}
+
+fn keyword_context_signals(raw: &str, identifier: Option<&str>, keyword: &str) -> (Vec<&'static str>, u8) {
+    let mut signals = Vec::new();
+    let mut score = 0u8;
+    let lower = raw.to_lowercase();
+    let kw = keyword.to_lowercase();
+
+    if lower.contains("authorization") || lower.contains("bearer ") {
+        signals.push("auth-header");
+        score = score.saturating_add(3);
+    }
+    if lower.contains("x-") || lower.contains("-h ") || lower.contains("header") {
+        signals.push("header");
+        score = score.saturating_add(2);
+    }
+    if kw.contains("token") || kw.contains("secret") || kw.contains("key") || kw.contains("pass") {
+        signals.push("keyword-hint");
+        score = score.saturating_add(2);
+    }
+    if lower.contains("?" ) && lower.contains("=") {
+        signals.push("url-param");
+        score = score.saturating_add(1);
+    }
+    if let Some(id) = identifier {
+        let id_l = id.to_lowercase();
+        if id_l.contains("key") || id_l.contains("token") || id_l.contains("secret") || id_l.contains("pass") {
+            signals.push("id-hint");
+            score = score.saturating_add(2);
+        }
+    }
+
+    (signals, score.min(10))
 }
 

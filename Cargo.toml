@@ -20,8 +20,8 @@ log = "0.4"
 env_logger = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tree-sitter = { version = "0.20", optional = true }
-tree-sitter-javascript = { version = "0.20", optional = true }
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
 
 [features]
 default = []

@@ -208,11 +208,36 @@ pub fn scan_for_secrets(
 
                     if deep_scan {
                         let (count, nearest) = repeat_stats(bytes, candidate_bytes, start);
+                        let shape = token_shape_hints(&snippet_str);
+                        let shape_str = if shape.is_empty() {
+                            "shape n/a".to_string()
+                        } else {
+                            format!("shape {}", shape.join(","))
+                        };
+                        let (alpha_pct, digit_pct, other_pct) = composition_percentages(&snippet_str);
+                        let id_hint = identifier
+                            .as_deref()
+                            .map(|id| format!("; id {}", id))
+                            .unwrap_or_default();
+                        let (signals, confidence) = context_signals(&raw_context, identifier.as_deref(), &snippet_str);
+                        let signals_str = if signals.is_empty() {
+                            "signals n/a".to_string()
+                        } else {
+                            format!("signals {}", signals.join(","))
+                        };
                         let _ = writeln!(
                             out,
-                            "Story: appears {} times; nearest repeat {} bytes away",
+                            "Story: appears {} times; nearest repeat {} bytes away; len {}; {}; mix a{}% d{}% s{}%; {}; conf {}/10{}",
                             count,
-                            nearest.map(|d| d.to_string()).unwrap_or_else(|| "n/a".to_string())
+                            nearest.map(|d| d.to_string()).unwrap_or_else(|| "n/a".to_string()),
+                            snippet_str.len(),
+                            shape_str,
+                            alpha_pct,
+                            digit_pct,
+                            other_pct,
+                            signals_str,
+                            confidence,
+                            id_hint
                         );
                     }
 
@@ -280,5 +305,135 @@ fn repeat_stats(bytes: &[u8], needle: &[u8], pos: usize) -> (usize, Option<usize
         nearest = Some(nearest.map(|d: usize| d.min(dist)).unwrap_or(dist));
     }
     (positions.len(), nearest)
+}
+
+fn token_shape_hints(token: &str) -> Vec<&'static str> {
+    let mut hints = Vec::new();
+    if is_uuid_like(token) {
+        hints.push("uuid");
+    }
+    if is_jwt_like(token) {
+        hints.push("jwt");
+    }
+    if is_hex_like(token) {
+        hints.push("hex");
+    }
+    if is_base64_like(token) {
+        hints.push("base64");
+    } else if is_base64url_like(token) {
+        hints.push("base64url");
+    }
+    hints
+}
+
+fn composition_percentages(token: &str) -> (u8, u8, u8) {
+    let mut alpha = 0usize;
+    let mut digit = 0usize;
+    let mut other = 0usize;
+    for ch in token.chars() {
+        if ch.is_ascii_alphabetic() {
+            alpha += 1;
+        } else if ch.is_ascii_digit() {
+            digit += 1;
+        } else {
+            other += 1;
+        }
+    }
+    let len = token.chars().count().max(1);
+    let ap = ((alpha * 100) / len) as u8;
+    let dp = ((digit * 100) / len) as u8;
+    let op = ((other * 100) / len) as u8;
+    (ap, dp, op)
+}
+
+fn is_hex_like(token: &str) -> bool {
+    let len = token.len();
+    len >= 16
+        && len % 2 == 0
+        && token.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn is_base64_like(token: &str) -> bool {
+    let len = token.len();
+    len >= 16
+        && len % 4 == 0
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+}
+
+fn is_base64url_like(token: &str) -> bool {
+    let len = token.len();
+    len >= 16
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=')
+}
+
+fn is_uuid_like(token: &str) -> bool {
+    if token.len() != 36 {
+        return false;
+    }
+    let bytes = token.as_bytes();
+    for &i in &[8usize, 13, 18, 23] {
+        if bytes[i] != b'-' {
+            return false;
+        }
+    }
+    token
+        .chars()
+        .enumerate()
+        .all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() })
+}
+
+fn is_jwt_like(token: &str) -> bool {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    parts.iter().all(|p| is_base64url_like(p))
+}
+
+fn context_signals(raw: &str, identifier: Option<&str>, token: &str) -> (Vec<&'static str>, u8) {
+    let mut signals = Vec::new();
+    let mut score = 0u8;
+    let lower = raw.to_lowercase();
+
+    if lower.contains("authorization") || lower.contains("bearer ") {
+        signals.push("auth-header");
+        score = score.saturating_add(3);
+    }
+    if lower.contains("x-") || lower.contains("-h ") || lower.contains("header") {
+        signals.push("header");
+        score = score.saturating_add(2);
+    }
+    if lower.contains("api_key") || lower.contains("apikey") || lower.contains("secret") || lower.contains("token") {
+        signals.push("secret-keyword");
+        score = score.saturating_add(2);
+    }
+    if lower.contains("password") || lower.contains("passwd") || lower.contains("pwd") {
+        signals.push("password");
+        score = score.saturating_add(2);
+    }
+    if lower.contains("?" ) && lower.contains("=") {
+        signals.push("url-param");
+        score = score.saturating_add(1);
+    }
+    if let Some(id) = identifier {
+        let id_l = id.to_lowercase();
+        if id_l.contains("key") || id_l.contains("token") || id_l.contains("secret") || id_l.contains("pass") {
+            signals.push("id-hint");
+            score = score.saturating_add(2);
+        }
+    }
+    if is_jwt_like(token) {
+        signals.push("jwt");
+        score = score.saturating_add(3);
+    } else if is_base64_like(token) || is_base64url_like(token) {
+        signals.push("b64");
+        score = score.saturating_add(1);
+    }
+
+    (signals, score.min(10))
 }
 
