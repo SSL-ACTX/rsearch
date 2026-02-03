@@ -1,4 +1,4 @@
-# Copilot Instructions (rsearch)
+# Copilot Instructions (argus)
 
 ## Big-picture architecture
 - Single-binary Rust CLI; core logic is in [../src/main.rs](../src/main.rs).

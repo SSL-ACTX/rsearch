@@ -1,27 +1,28 @@
 <div align="center">
 
-![rsearch Banner](https://capsule-render.vercel.app/api?type=waving&color=0:0f1724,100:0b5ed7&height=160&section=header&text=rsearch&fontSize=80&fontColor=FFFFFF&animation=fadeIn&fontAlignY=35&rotate=2&stroke=0b5ed7&strokeWidth=2&desc=High-performance%20entropy-based%20secret%20scanner&descSize=16&descAlignY=60)
+![argus Banner](https://capsule-render.vercel.app/api?type=waving&color=0:0f1724,100:0b5ed7&height=160&section=header&text=argus&fontSize=80&fontColor=FFFFFF&animation=fadeIn&fontAlignY=35&rotate=2&stroke=0b5ed7&strokeWidth=2&desc=High-performance%20entropy-based%20secret%20scanner&descSize=16&descAlignY=60)
 
 ![Language](https://img.shields.io/badge/language-Rust-orange.svg?style=for-the-badge&logo=rust)
 ![License](https://img.shields.io/badge/license-AGPL_3.0-blue.svg?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-0.2.0-green.svg?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-0.5.0-green.svg?style=for-the-badge)
 
 [Installation](#installation) • [Usage](#usage) • [Output Modes](#output-modes) • [Performance Notes](#performance-notes) • [License](#license)
 
 </div>
 
-**rsearch** is a high-performance, multi-threaded security scanner designed to detect secrets, keys, and sensitive information in local files and remote URLs. It combines Shannon entropy analysis with fast multi-pattern matching to find both unknown and known secrets while minimizing false positives.
+**argus** is a high-performance, multi-threaded security scanner designed to detect secrets, keys, and sensitive information in local files and remote URLs. It combines Shannon entropy analysis with fast multi-pattern matching to find both unknown and known secrets while minimizing false positives.
 
 ---
 
 ## Overview
 
-rsearch targets both explicit secret indicators (keywords, tokens) and implicit secrets (high-entropy strings). It is optimized for large codebases and binary artifacts by leveraging memory mapping and parallel scanning.
+argus targets both explicit secret indicators (keywords, tokens) and implicit secrets (high-entropy strings). It is optimized for large codebases and binary artifacts by leveraging memory mapping and parallel scanning.
 
 ### Highlights
 
 - High-performance keyword search via Aho-Corasick
 - Entropy-based secret detection using Shannon entropy
+- Adaptive confidence scoring with explainable signals
 - Request tracing (fetch/axios/XHR/curl) with endpoint classification
 - Diff-only scan summaries for added lines
 - NDJSON output for large scans
@@ -35,12 +36,12 @@ Prerequisites: Rust toolchain (rustup).
 Build from source:
 
 ```bash
-git clone https://github.com/SSL-ACTX/rsearch.git
-cd rsearch
+git clone https://github.com/SSL-ACTX/argus.git
+cd argus
 cargo build --release
 
 # run the binary
-./target/release/rsearch --help
+./target/release/argus --help
 ```
 
 Install globally:
@@ -56,7 +57,7 @@ cargo install --path .
 At minimum, provide one or more targets (`-t`) and choose a scanning mode (`--entropy` or `-k`).
 
 ```bash
-rsearch -t <path_or_url> [OPTIONS]
+argus -t <path_or_url> [OPTIONS]
 ```
 
 ### Common examples
@@ -64,19 +65,19 @@ rsearch -t <path_or_url> [OPTIONS]
 - Scan a directory for high-entropy secrets:
 
 ```bash
-rsearch -t ./src --entropy
+argus -t ./src --entropy
 ```
 
 - Scan a remote file for keywords:
 
 ```bash
-rsearch -t https://example.com/app.js -k API_KEY -k secret
+argus -t https://example.com/app.js -k API_KEY -k secret
 ```
 
 - Emit machine-readable JSON to a file (single file):
 
 ```bash
-rsearch -t ./repo --entropy --json --output ./results.json
+argus -t ./repo --entropy --json --output ./results.json
 ```
 
 ---
@@ -87,14 +88,14 @@ rsearch -t ./repo --entropy --json --output ./results.json
 Use this quick command to scan the current repository for high-entropy secrets and stream results as NDJSON (low memory):
 
 ```bash
-rsearch -t . --entropy --json --output ./results.ndjson --output-format ndjson -j 4
+argus -t . --entropy --json --output ./results.ndjson --output-format ndjson -j 4
 ```
 
 > [!TIP]
 If you prefer a single JSON file with all results (small projects), use `--output-format single` and a `.json` output path.
 
 ```bash
-rsearch -t ./repo --entropy --json --output ./results.json --output-format single
+argus -t ./repo --entropy --json --output ./results.json --output-format single
 ```
 
 > [!NOTE]
@@ -148,7 +149,7 @@ Enrichment:
 
 `--deep-scan` augments each match with statistics that help triage relevance (frequency in file, nearest neighbor distance, call-site proximity, span/density, and identifier hints). It now adds contextual signals (e.g., header/auth/keyword hints), token typing, a confidence score, and an entropy cluster summary to make the “story” more actionable. When flow is available, it also prints a compact **Context Graph** tree (owner/scope/path/call/control hints).
 
-When running in human output mode, rsearch also prints a **Risk Heatmap** summary at the end of the scan (top files by weighted score) and a **Secret Lineage** summary that highlights repeated tokens across files (origin → propagation). Attack surface hints now classify endpoints (public/localhost/internal/relative) and link request-trace calls to nearby endpoints.
+When running in human output mode, argus also prints a **Risk Heatmap** summary at the end of the scan (top files by weighted score) and a **Secret Lineage** summary that highlights repeated tokens across files (origin → propagation). Attack surface hints now classify endpoints (public/localhost/internal/relative) and link request-trace calls to nearby endpoints.
 
 In deep-scan mode, rsearch also emits **Suppression Hints** (experimental) for likely false positives, with a suggested rule, reasons, confidence, and a decay window.
 
@@ -210,7 +211,7 @@ For large repositories or CI runs prefer `ndjson` to avoid high memory usage.
 
 ## Performance Notes
 
-rsearch is I/O-bound; its throughput is limited by disk and network. It minimizes allocations in the hot path and uses a shared thread pool for scanning.
+argus is I/O-bound; its throughput is limited by disk and network. It minimizes allocations in the hot path and uses a shared thread pool for scanning.
 
 Tips:
 
@@ -229,6 +230,6 @@ This project is licensed under the AGPL-3.0 License. See `LICENSE` for details.
 
 **Author:** Seuriin ([SSL-ACTX](https://github.com/SSL-ACTX))
 
-*v0.2.0*
+*v0.5.0*
 
 </div>

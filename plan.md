@@ -1,4 +1,4 @@
-# rsearch Signature Features Plan
+# argus Signature Features Plan
 
 Status legend: done | in-progress | planned
 

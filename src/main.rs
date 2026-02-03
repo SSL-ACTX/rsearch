@@ -1,6 +1,6 @@
-use rsearch::cli::Cli;
-use rsearch::output::{build_output_mode, finalize_output, handle_output};
-use rsearch::scan::{load_diff_map, load_suppression_rules, run_analysis, run_recursive_scan, DiffSummary, Heatmap, Lineage};
+use argus::cli::Cli;
+use argus::output::{build_output_mode, finalize_output, handle_output};
+use argus::scan::{load_diff_map, load_suppression_rules, run_analysis, run_recursive_scan, DiffSummary, Heatmap, Lineage};
 use clap::CommandFactory;
 use clap::Parser;
 use log::{error, info, warn};
@@ -12,9 +12,9 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 mod tests {
-    use rsearch::scan::{apply_suppression_rules, build_attack_surface_links, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, SuppressionRule};
-    use rsearch::entropy::adaptive_confidence_entropy;
-    use rsearch::output::MatchRecord;
+    use argus::scan::{apply_suppression_rules, build_attack_surface_links, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, SuppressionRule};
+    use argus::entropy::adaptive_confidence_entropy;
+    use argus::output::MatchRecord;
 
     #[test]
     fn attack_surface_extracts_endpoints() {

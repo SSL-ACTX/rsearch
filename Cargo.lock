@@ -74,6 +74,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "argus"
+version = "0.5.0"
+dependencies = [
+ "aho-corasick",
+ "base64 0.21.7",
+ "clap",
+ "crossterm",
+ "env_logger",
+ "ignore",
+ "log",
+ "memchr",
+ "memmap2",
+ "owo-colors",
+ "ratatui",
+ "rayon",
+ "serde",
+ "serde_json",
+ "syntect",
+ "tempfile",
+ "tree-sitter",
+ "tree-sitter-javascript",
+ "ureq",
+]
+
+[[package]]
 name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -930,31 +955,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rsearch"
-version = "0.2.0"
-dependencies = [
- "aho-corasick",
- "base64 0.21.7",
- "clap",
- "crossterm",
- "env_logger",
- "ignore",
- "log",
- "memchr",
- "memmap2",
- "owo-colors",
- "ratatui",
- "rayon",
- "serde",
- "serde_json",
- "syntect",
- "tempfile",
- "tree-sitter",
- "tree-sitter-javascript",
- "ureq",
 ]
 
 [[package]]
