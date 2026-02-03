@@ -8,9 +8,9 @@ pub fn format_prettified(raw: &str, matched_word: &str) -> String {
 pub fn format_prettified_with_hint(raw: &str, matched_word: &str, source_hint: Option<&str>) -> String {
     use owo_colors::OwoColorize;
 
-    if cfg!(feature = "highlighting") {
+    if let Some(highlighted) = maybe_highlight(raw, source_hint) {
         let _ = matched_word;
-        return format_prettified_highlight(raw, source_hint);
+        return highlighted;
     }
 
     let mut out = String::new();
@@ -90,6 +90,17 @@ fn format_prettified_highlight(raw: &str, source_hint: Option<&str>) -> String {
     out
 }
 
+#[cfg(feature = "highlighting")]
+fn maybe_highlight(raw: &str, source_hint: Option<&str>) -> Option<String> {
+    Some(format_prettified_highlight(raw, source_hint))
+}
+
+#[cfg(not(feature = "highlighting"))]
+fn maybe_highlight(_raw: &str, _source_hint: Option<&str>) -> Option<String> {
+    None
+}
+
+#[cfg(feature = "highlighting")]
 fn detect_extension(source_hint: &str) -> Option<String> {
     let mut end = source_hint.len();
     if let Some(idx) = source_hint.find('?') {
@@ -168,5 +179,20 @@ pub fn find_preceding_identifier(bytes: &[u8], start_index: usize) -> Option<Str
     }
 
     None
+}
+
+#[derive(Clone, Default)]
+pub struct LineFilter {
+    ranges: Vec<(usize, usize)>,
+}
+
+impl LineFilter {
+    pub fn new(ranges: Vec<(usize, usize)>) -> Self {
+        Self { ranges }
+    }
+
+    pub fn allows(&self, line: usize) -> bool {
+        self.ranges.iter().any(|(s, e)| line >= *s && line <= *e)
+    }
 }
 

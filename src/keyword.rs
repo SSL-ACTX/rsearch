@@ -6,7 +6,8 @@ use std::collections::HashMap;
 
 use crate::output::MatchRecord;
 use crate::heuristics::{analyze_flow_context_with_mode, format_context_graph, format_flow_compact, FlowMode};
-use crate::utils::{find_preceding_identifier, format_prettified_with_hint};
+use crate::entropy::request_trace_lines;
+use crate::utils::{find_preceding_identifier, format_prettified_with_hint, LineFilter};
 
 pub fn process_search(
     bytes: &[u8],
@@ -15,6 +16,7 @@ pub fn process_search(
     context_size: usize,
     deep_scan: bool,
     flow_mode: FlowMode,
+    line_filter: Option<&LineFilter>,
 ) -> (String, Vec<MatchRecord>) {
     use owo_colors::OwoColorize;
 
@@ -62,6 +64,12 @@ pub fn process_search(
         let start = pos.saturating_sub(context_size);
         let end = (pos + mat.len() + context_size).min(bytes.len());
         let raw_snippet = String::from_utf8_lossy(&bytes[start..end]);
+
+        if let Some(filter) = line_filter {
+            if !filter.allows(line) {
+                continue;
+            }
+        }
 
         let _ = writeln!(
             out,
@@ -141,6 +149,23 @@ pub fn process_search(
         if let Some(flow) = flow.as_ref() {
             if let Some(line) = format_flow_compact(flow) {
                 let _ = writeln!(out, "{} {}", "Flow:".bright_magenta().bold(), line.bright_cyan());
+            }
+        }
+
+        if deep_scan {
+            let lower = matched_word.to_lowercase();
+            if lower.contains("fetch")
+                || lower.contains("axios")
+                || lower.contains("xhr")
+                || lower.contains("xmlhttprequest")
+                || lower.contains("request")
+            {
+                if let Some(lines) = request_trace_lines(&raw_snippet) {
+                    let _ = writeln!(out, "{}", "Request:".bright_cyan().bold());
+                    for line in lines {
+                        let _ = writeln!(out, "{}", line);
+                    }
+                }
             }
         }
 

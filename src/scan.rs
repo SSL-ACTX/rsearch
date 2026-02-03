@@ -6,18 +6,21 @@ use rayon::prelude::*;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::process::Command;
 
 use crate::cli::Cli;
-use crate::entropy::scan_for_secrets;
+use crate::entropy::{scan_for_requests, scan_for_secrets};
 use crate::keyword::process_search;
 use crate::heuristics::flow_mode_for_source;
 use crate::output::{handle_output, MatchRecord, OutputMode};
 use std::fmt::Write as FmtWrite;
+use crate::utils::LineFilter;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 const MAX_MMAP_SIZE: u64 = 200 * 1024 * 1024; // 200 MB
 const DEFAULT_EXCLUDES: &[&str] = &[
+    "**/.git/**",
     "**/*.lock",
     "**/Cargo.lock",
     "**/package-lock.json",
@@ -38,15 +41,27 @@ pub fn run_analysis(
     source_hint: Option<&str>,
     heatmap: Option<&Arc<Mutex<Heatmap>>>,
     lineage: Option<&Arc<Mutex<Lineage>>>,
+    diff_map: Option<&DiffMap>,
 ) -> (String, Vec<MatchRecord>) {
     let mut file_output = String::new();
     let mut records: Vec<MatchRecord> = Vec::new();
 
     let tag_set = parse_emit_tags(&cli.emit_tags);
     let flow_mode = flow_mode_for_source(source_path, source_hint, cli.flow_scan, bytes);
+    let line_filter = diff_map
+        .and_then(|map| source_path.and_then(|p| map.get(p)))
+        .map(|ranges| LineFilter::new(ranges.clone()));
 
     if !cli.keyword.is_empty() {
-        let (s, mut r) = process_search(bytes, source_label, &cli.keyword, cli.context, cli.deep_scan, flow_mode);
+        let (s, mut r) = process_search(
+            bytes,
+            source_label,
+            &cli.keyword,
+            cli.context,
+            cli.deep_scan,
+            flow_mode,
+            line_filter.as_ref(),
+        );
         file_output.push_str(&s);
         records.append(&mut r);
     }
@@ -60,9 +75,47 @@ pub fn run_analysis(
             &tag_set,
             cli.deep_scan,
             flow_mode,
+            line_filter.as_ref(),
+            cli.request_trace,
         );
         file_output.push_str(&s);
         records.append(&mut r);
+    }
+
+    if cli.request_trace {
+        let (s, mut r) = scan_for_requests(
+            source_label,
+            bytes,
+            cli.context,
+            flow_mode,
+            line_filter.as_ref(),
+            source_path,
+        );
+        file_output.push_str(&s);
+        records.append(&mut r);
+    }
+
+    if !records.is_empty() && contains_public_endpoint(bytes) {
+        if !cli.json {
+            use owo_colors::OwoColorize;
+            let _ = writeln!(
+                file_output,
+                "{}",
+                "⚠️ Attack Surface: public endpoints detected in this file"
+                    .bright_yellow()
+                    .bold()
+            );
+        }
+        records.push(MatchRecord {
+            source: source_label.to_string(),
+            kind: "attack-surface".to_string(),
+            matched: "public-endpoint".to_string(),
+            line: 0,
+            col: 0,
+            entropy: None,
+            context: "public endpoints detected in file with findings".to_string(),
+            identifier: None,
+        });
     }
 
     if let Some(map) = heatmap {
@@ -86,6 +139,7 @@ pub fn run_recursive_scan(
     output_mode: &OutputMode,
     heatmap: Option<&Arc<Mutex<Heatmap>>>,
     lineage: Option<&Arc<Mutex<Lineage>>>,
+    diff_map: Option<&DiffMap>,
 ) {
     let exclude_matcher = build_exclude_matcher(&cli.exclude);
     let walker = WalkBuilder::new(input)
@@ -98,6 +152,11 @@ pub fn run_recursive_scan(
             Ok(entry) => {
                 let path = entry.path();
                 if path.is_file() {
+                    if let Some(map) = diff_map {
+                        if !map.contains_key(path) {
+                            return;
+                        }
+                    }
                     if is_excluded_path(path, &exclude_matcher) {
                         return;
                     }
@@ -137,6 +196,7 @@ pub fn run_recursive_scan(
                                     Some(&path.to_string_lossy()),
                                     heatmap,
                                     lineage,
+                                    diff_map,
                                 );
                                 handle_output(output_mode, cli, &out, recs, Some(path), &path.to_string_lossy());
                             }
@@ -163,6 +223,79 @@ pub fn build_exclude_matcher(patterns: &[String]) -> Gitignore {
         let _ = builder.add_line(None, pat);
     }
     builder.build().unwrap_or_else(|_| Gitignore::empty())
+}
+
+pub type DiffMap = HashMap<std::path::PathBuf, Vec<(usize, usize)>>;
+
+pub fn load_diff_map(base: &str) -> Option<DiffMap> {
+    let root = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !root.status.success() {
+        return None;
+    }
+    let root_path = String::from_utf8_lossy(&root.stdout).trim().to_string();
+
+    let diff = Command::new("git")
+        .current_dir(&root_path)
+        .args(["diff", "--unified=0", base, "--"])
+        .output()
+        .ok()?;
+    if !diff.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&diff.stdout);
+    Some(parse_unified_diff(&root_path, &text))
+}
+
+pub fn parse_unified_diff(root: &str, diff: &str) -> DiffMap {
+    let mut map: DiffMap = HashMap::new();
+    let mut current: Option<std::path::PathBuf> = None;
+
+    for line in diff.lines() {
+        if line.starts_with("+++") {
+            let path = line.trim_start_matches("+++ ").trim();
+            if let Some(path) = path.strip_prefix("b/") {
+                let full = std::path::Path::new(root).join(path);
+                current = Some(full);
+            } else {
+                current = None;
+            }
+            continue;
+        }
+        if line.starts_with("@@") {
+            if let Some(path) = current.clone() {
+                if let Some((start, count)) = parse_hunk_added(line) {
+                    if count > 0 {
+                        let end = start + count - 1;
+                        map.entry(path).or_default().push((start, end));
+                    }
+                }
+            }
+        }
+    }
+
+    map
+}
+
+fn parse_hunk_added(line: &str) -> Option<(usize, usize)> {
+    let plus = line.find('+')?;
+    let mut rest = &line[plus + 1..];
+    if let Some(end) = rest.find(' ') {
+        rest = &rest[..end];
+    }
+    let mut parts = rest.split(',');
+    let start = parts.next()?.parse::<usize>().ok()?;
+    let count = parts.next().map(|p| p.parse::<usize>().ok()).flatten().unwrap_or(1);
+    Some((start, count))
+}
+
+fn contains_public_endpoint(bytes: &[u8]) -> bool {
+    memchr::memmem::find(bytes, b"http://").is_some()
+        || memchr::memmem::find(bytes, b"https://").is_some()
+        || memchr::memmem::find(bytes, b"ws://").is_some()
+        || memchr::memmem::find(bytes, b"wss://").is_some()
 }
 
 pub fn is_excluded_path(path: &Path, matcher: &Gitignore) -> bool {

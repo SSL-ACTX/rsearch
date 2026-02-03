@@ -1,6 +1,6 @@
 use rsearch::cli::Cli;
 use rsearch::output::{build_output_mode, finalize_output, handle_output};
-use rsearch::scan::{run_analysis, run_recursive_scan, Heatmap, Lineage};
+use rsearch::scan::{load_diff_map, run_analysis, run_recursive_scan, Heatmap, Lineage};
 use clap::CommandFactory;
 use clap::Parser;
 use log::{error, info, warn};
@@ -53,6 +53,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let heatmap = Arc::new(Mutex::new(Heatmap::default()));
     let lineage = Arc::new(Mutex::new(Lineage::default()));
 
+    let diff_map = if cli.diff {
+        load_diff_map(&cli.diff_base)
+    } else {
+        None
+    };
+
     for input in &cli.target {
         if input.starts_with("http") {
             info!("Streaming {}", input);
@@ -73,6 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Some(input),
                                 Some(&heatmap),
                                 Some(&lineage),
+                                diff_map.as_ref(),
                             );
                             handle_output(&output_mode, &cli, &out, recs, None, input);
                         }
@@ -82,7 +89,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => warn!("HTTP error fetching {}: {}", input, e),
             }
         } else {
-            run_recursive_scan(input, &cli, &output_mode, Some(&heatmap), Some(&lineage));
+            run_recursive_scan(
+                input,
+                &cli,
+                &output_mode,
+                Some(&heatmap),
+                Some(&lineage),
+                diff_map.as_ref(),
+            );
         }
     }
 

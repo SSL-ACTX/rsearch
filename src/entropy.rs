@@ -4,10 +4,11 @@ use memchr::memmem;
 use log::info;
 use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
+use std::path::Path;
 
 use crate::output::MatchRecord;
-use crate::heuristics::{analyze_flow_context_with_mode, format_context_graph, format_flow_compact, FlowMode};
-use crate::utils::{find_preceding_identifier, format_prettified_with_hint};
+use crate::heuristics::{analyze_flow_context_with_mode, format_context_graph, format_flow_compact, is_likely_code_for_path, FlowMode};
+use crate::utils::{find_preceding_identifier, format_prettified_with_hint, LineFilter};
 
 /// Calculates the Shannon Entropy (randomness) of a byte slice.
 pub fn calculate_entropy(data: &[u8]) -> f64 {
@@ -80,6 +81,8 @@ pub fn scan_for_secrets(
     emit_tags: &HashSet<String>,
     deep_scan: bool,
     flow_mode: FlowMode,
+    line_filter: Option<&LineFilter>,
+    request_trace: bool,
 ) -> (String, Vec<MatchRecord>) {
     use owo_colors::OwoColorize;
 
@@ -143,6 +146,12 @@ pub fn scan_for_secrets(
                             let ctx_end = (i + context_size).min(bytes.len());
                             let raw_context = String::from_utf8_lossy(&bytes[ctx_start..ctx_end]);
 
+                            if let Some(filter) = line_filter {
+                                if !filter.allows(line) {
+                                    continue;
+                                }
+                            }
+
                             let _ = write!(
                                 out,
                                 "{}[L:{} C:{} Tag:{}] ",
@@ -185,6 +194,12 @@ pub fn scan_for_secrets(
                     let ctx_start = start.saturating_sub(context_size);
                     let ctx_end = (i + context_size).min(bytes.len());
                     let raw_context = String::from_utf8_lossy(&bytes[ctx_start..ctx_end]);
+
+                    if let Some(filter) = line_filter {
+                        if !filter.allows(line) {
+                            continue;
+                        }
+                    }
 
                     let identifier = find_preceding_identifier(bytes, start);
                     candidates.push(CandidatePos { start, line, col });
@@ -267,6 +282,15 @@ pub fn scan_for_secrets(
                         }
                     }
 
+                    if request_trace {
+                        if let Some(lines) = request_trace_lines(&raw_context) {
+                            let _ = writeln!(out, "{}", "Request:".bright_cyan().bold());
+                            for line in lines {
+                                let _ = writeln!(out, "{}", line);
+                            }
+                        }
+                    }
+
                     if let Some(flow) = flow.as_ref() {
                         if let Some(line) = format_flow_compact(flow) {
                             let _ = writeln!(out, "{} {}", "Flow:".bright_magenta().bold(), line.bright_cyan());
@@ -329,6 +353,143 @@ pub fn scan_for_secrets(
             "⚠️".bright_yellow().bold(),
             url_hits
         );
+    }
+
+    (out, records)
+}
+
+pub fn scan_for_requests(
+    source_label: &str,
+    bytes: &[u8],
+    context_size: usize,
+    flow_mode: FlowMode,
+    line_filter: Option<&LineFilter>,
+    source_path: Option<&Path>,
+) -> (String, Vec<MatchRecord>) {
+    use owo_colors::OwoColorize;
+
+    let mut out = String::new();
+    let mut records: Vec<MatchRecord> = Vec::new();
+    let mut header_written = false;
+
+    if let Some(path) = source_path {
+        if path_has_component(path, ".git") {
+            return (out, records);
+        }
+        if !is_likely_code_for_path(path, bytes) {
+            return (out, records);
+        }
+    }
+
+    let mut ensure_header = |buffer: &mut String| {
+        if !header_written {
+            let _ = writeln!(
+                buffer,
+                "\n🌐 Request tracing {}...",
+                source_label.cyan()
+            );
+            let _ = writeln!(buffer, "{}", "━".repeat(60).dimmed());
+            header_written = true;
+        }
+    };
+
+    let patterns: &[(&[u8], &str)] = &[
+        (b"fetch(", "fetch"),
+        (b"axios.", "axios"),
+        (b"XMLHttpRequest", "xhr"),
+        (b".open(", "xhr"),
+        (b"http://", "http"),
+        (b"https://", "http"),
+    ];
+
+    let mut hits: Vec<(usize, &str)> = Vec::new();
+    let mut seen = HashSet::new();
+    for (pat, label) in patterns {
+        for pos in memmem::find_iter(bytes, pat) {
+            if seen.insert(pos) {
+                hits.push((pos, *label));
+            }
+        }
+    }
+
+    hits.sort_by_key(|(p, _)| *p);
+    hits.truncate(50);
+
+    for (pos, label) in hits {
+        let preceding = &bytes[..pos];
+        let line = memchr::memchr_iter(b'\n', preceding).count() + 1;
+        let last_nl = preceding.iter().rposition(|&b| b == b'\n').unwrap_or(0);
+        let col = if last_nl == 0 { pos } else { pos - last_nl };
+
+        if let Some(filter) = line_filter {
+            if !filter.allows(line) {
+                continue;
+            }
+        }
+
+        let start = pos.saturating_sub(context_size);
+        let end = (pos + context_size).min(bytes.len());
+        let raw_snippet = String::from_utf8_lossy(&bytes[start..end]);
+
+        if label == "http" && !has_request_token(&raw_snippet) {
+            continue;
+        }
+
+        if let Some(lines) = request_trace_lines(&raw_snippet) {
+            ensure_header(&mut out);
+            let _ = writeln!(
+                out,
+                "{}[L:{} C:{} Request:{}]{}",
+                "[".dimmed(),
+                line.bright_magenta(),
+                col.bright_blue(),
+                label.bright_yellow().bold(),
+                "]".dimmed()
+            );
+
+            let pretty = format_prettified_with_hint(&raw_snippet, label, Some(source_label));
+            let _ = writeln!(out, "{}", pretty);
+
+            let _ = writeln!(out, "{}", "Request:".bright_cyan().bold());
+            for line in lines {
+                let _ = writeln!(out, "{}", line);
+            }
+
+            let flow = if flow_mode != FlowMode::Off {
+                analyze_flow_context_with_mode(bytes, pos, flow_mode)
+            } else {
+                None
+            };
+
+            if let Some(flow) = flow.as_ref() {
+                if let Some(lines) = format_context_graph(flow, None) {
+                    let _ = writeln!(out, "{}", "Context:".bright_cyan().bold());
+                    for line in lines {
+                        let styled = style_context_line(&line);
+                        let _ = writeln!(out, "{}", styled);
+                    }
+                }
+            }
+
+            if let Some(flow) = flow.as_ref() {
+                if let Some(line) = format_flow_compact(flow) {
+                    let _ = writeln!(out, "{} {}", "Flow:".bright_magenta().bold(), line.bright_cyan());
+                }
+            }
+
+            let _ = writeln!(out, "{}", "─".repeat(40).dimmed());
+
+            records.push(MatchRecord {
+                source: source_label.to_string(),
+                kind: "request-trace".to_string(),
+                matched: label.to_string(),
+                line,
+                col,
+                entropy: None,
+                context: raw_snippet.to_string(),
+                identifier: None,
+            });
+        }
     }
 
     (out, records)
@@ -633,6 +794,900 @@ fn preferred_owner_identifier(
     }
 
     None
+}
+
+pub(crate) fn request_trace_lines(raw: &str) -> Option<Vec<String>> {
+    use owo_colors::OwoColorize;
+
+    let mut parts = extract_request_candidates(raw);
+    if parts.is_empty() {
+        return None;
+    }
+
+    if !has_strong_request_signal(&parts, raw) {
+        return None;
+    }
+
+    parts.retain(|p| request_strength(p) > 0);
+    if parts.is_empty() {
+        return None;
+    }
+
+    parts.sort_by_key(|p| std::cmp::Reverse(request_strength(p)));
+    let mut deduped: Vec<RequestParts> = Vec::new();
+    let mut seen = HashSet::new();
+    for part in parts {
+        let key = request_key(&part);
+        if seen.insert(key) {
+            deduped.push(part);
+        }
+        if deduped.len() >= 3 {
+            break;
+        }
+    }
+
+    if deduped.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::new();
+    deduped.truncate(2);
+    for (idx, part) in deduped.into_iter().enumerate() {
+        lines.push(format!(
+            "  • {} {}",
+            format!("request #{}", idx + 1).bright_magenta(),
+            part.source.bright_white()
+        ));
+
+        let method = part
+            .method
+            .or_else(|| if part.body.is_some() { Some("POST".to_string()) } else { None });
+
+        if let Some(m) = method {
+            lines.push(format!("    {} {}", "method".bright_magenta(), m.bright_white()));
+        }
+        if let Some(u) = part.url.or_else(|| part.url_hint.clone()) {
+            lines.push(format!("    {} {}", "url".bright_magenta(), u.bright_white()));
+        }
+
+        if !part.headers.is_empty() {
+            lines.push(format!(
+                "    {} {}",
+                "headers".bright_magenta(),
+                part.headers.join(", ").bright_white()
+            ));
+        }
+        if let Some(b) = part.body {
+            lines.push(format!("    {} {}", "body".bright_magenta(), b.bright_white()));
+        }
+    }
+
+    Some(lines)
+}
+
+struct RequestParts {
+    source: &'static str,
+    method: Option<String>,
+    url: Option<String>,
+    url_hint: Option<String>,
+    headers: Vec<String>,
+    body: Option<String>,
+}
+
+fn has_strong_request_signal(parts: &[RequestParts], raw: &str) -> bool {
+    for part in parts {
+        if part.source != "url-literal" && part.source != "heuristic" {
+            return true;
+        }
+        if part.method.is_some()
+            || part.body.is_some()
+            || !part.headers.is_empty()
+            || part.url_hint.is_some()
+        {
+            return true;
+        }
+    }
+    has_request_token(raw)
+}
+
+fn request_strength(part: &RequestParts) -> u8 {
+    let mut score = 0u8;
+    if part.source != "url-literal" {
+        score += 1;
+    }
+    if part.method.is_some() {
+        score += 2;
+    }
+    if !part.headers.is_empty() {
+        score += 2;
+    }
+    if part.body.is_some() {
+        score += 2;
+    }
+    if part.url_hint.is_some() {
+        score += 1;
+    }
+    score
+}
+
+fn request_key(part: &RequestParts) -> String {
+    if let Some(url) = part.url.as_ref() {
+        return normalize_url_key(url);
+    }
+    if let Some(hint) = part.url_hint.as_ref() {
+        return normalize_url_key(hint);
+    }
+    part.source.to_string()
+}
+
+fn normalize_url_key(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .trim_matches(|c: char| c == ')' || c == ';' || c == ',' || c == '`')
+        .to_string()
+}
+
+fn has_request_token(raw: &str) -> bool {
+    let lower = raw.to_lowercase();
+    lower.contains("fetch(")
+        || lower.contains("axios.")
+        || lower.contains("xmlhttprequest")
+        || lower.contains(".open(")
+        || lower.contains("curl ")
+        || lower.contains("requests.")
+        || lower.contains("httpx.")
+        || lower.contains("got(")
+        || lower.contains("ky(")
+        || lower.contains("$.ajax")
+        || lower.contains("jQuery.ajax")
+        || lower.contains("$.get")
+        || lower.contains("$.post")
+        || lower.contains("new request(")
+        || lower.contains("send(")
+        || lower.contains("method:")
+        || lower.contains("headers:")
+        || lower.contains("body:")
+}
+
+fn path_has_component(path: &Path, target: &str) -> bool {
+    path.components().any(|c| c.as_os_str() == target)
+}
+
+fn extract_request_candidates(raw: &str) -> Vec<RequestParts> {
+    let mut out = Vec::new();
+    if let Some(p) = parse_request_parts(raw) {
+        out.push(p);
+    }
+    if let Some(p) = parse_request_parts_fetch(raw) {
+        out.push(p);
+    }
+    if let Some(p) = parse_request_parts_axios(raw) {
+        out.push(p);
+    }
+    if let Some(p) = parse_request_parts_requests(raw) {
+        out.push(p);
+    }
+    if let Some(p) = parse_request_parts_heuristic(raw) {
+        out.push(p);
+    }
+
+    out.extend(parse_url_requests(raw));
+
+    let mut seen = HashSet::new();
+    out.retain(|p| {
+        if p.url.is_none() && p.url_hint.is_none() {
+            return false;
+        }
+        let key = format!("{}:{}", p.source, p.url.clone().unwrap_or_default());
+        if seen.contains(&key) {
+            false
+        } else {
+            seen.insert(key);
+            true
+        }
+    });
+    out
+}
+
+fn parse_request_parts(raw: &str) -> Option<RequestParts> {
+    let mut method = None;
+    let mut url = None;
+    let mut headers = Vec::new();
+    let mut body = None;
+    let curl = extract_curl_block(raw)?;
+
+    for line in curl.lines() {
+        let l = line.trim();
+        if let Some(m) = extract_curl_method(l) {
+            method = Some(m);
+        }
+        if let Some(u) = extract_curl_url(l) {
+            url = Some(u);
+        }
+        if let Some(h) = extract_curl_header(l) {
+            headers.push(h);
+        }
+        if let Some(b) = extract_curl_body(l) {
+            body = Some(b);
+        }
+    }
+
+    headers.sort();
+    headers.dedup();
+    headers.truncate(6);
+
+    Some(RequestParts {
+        source: "curl",
+        method,
+        url,
+        url_hint: None,
+        headers,
+        body,
+    })
+}
+
+fn parse_request_parts_fetch(raw: &str) -> Option<RequestParts> {
+    let idx = raw.find("fetch(")?;
+    let url = extract_quoted(raw, idx + 6);
+    let url_hint = if url.is_none() {
+        extract_first_arg_token(raw, idx + 6)
+    } else {
+        None
+    };
+    if url.is_none() && url_hint.is_none() {
+        return None;
+    }
+    let mut method = extract_method(raw);
+    if method.is_none() && raw.contains("method") {
+        method = extract_method(raw);
+    }
+    let headers = extract_headers_block(raw, "headers");
+    let body = if raw.contains("body") {
+        extract_body_keys(raw).or(Some("present".to_string()))
+    } else {
+        None
+    };
+    Some(RequestParts {
+        source: "fetch",
+        method,
+        url,
+        url_hint,
+        headers,
+        body,
+    })
+}
+
+fn parse_request_parts_axios(raw: &str) -> Option<RequestParts> {
+    let idx = raw.find("axios.")?;
+    let rest = &raw[idx + 6..];
+    let method = rest.split('(').next().map(|m| m.to_uppercase());
+    let url = extract_quoted(rest, 0);
+    let url_hint = if url.is_none() {
+        if let Some(paren) = rest.find('(') {
+            extract_first_arg_token(rest, paren + 1)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if url.is_none() && url_hint.is_none() {
+        return None;
+    }
+    Some(RequestParts {
+        source: "axios",
+        method,
+        url,
+        url_hint,
+        headers: extract_headers_block(raw, "headers"),
+        body: if raw.contains("data") {
+            extract_body_keys(raw).or(Some("present".to_string()))
+        } else {
+            None
+        },
+    })
+}
+
+fn parse_request_parts_requests(raw: &str) -> Option<RequestParts> {
+    let idx = raw.find("requests.")?;
+    let rest = &raw[idx + 9..];
+    let method = rest.split('(').next().map(|m| m.to_uppercase());
+    let url = extract_quoted(rest, 0);
+    let url_hint = if url.is_none() {
+        if let Some(paren) = rest.find('(') {
+            extract_first_arg_token(rest, paren + 1)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if url.is_none() && url_hint.is_none() {
+        return None;
+    }
+    Some(RequestParts {
+        source: "requests",
+        method,
+        url,
+        url_hint,
+        headers: extract_headers_block(raw, "headers"),
+        body: if raw.contains("data") || raw.contains("json=") {
+            extract_body_keys(raw).or(Some("present".to_string()))
+        } else {
+            None
+        },
+    })
+}
+
+fn parse_request_parts_heuristic(raw: &str) -> Option<RequestParts> {
+    let url = extract_url(raw);
+    if url.is_none() {
+        return None;
+    }
+    let method = extract_method(raw);
+    let headers = extract_headers(raw);
+    let body = extract_body_hint(raw);
+
+    Some(RequestParts {
+        source: "heuristic",
+        method,
+        url,
+        url_hint: None,
+        headers,
+        body,
+    })
+}
+
+fn parse_url_requests(raw: &str) -> Vec<RequestParts> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(idx) = raw[cursor..].find("http") {
+        let pos = cursor + idx;
+        if raw[pos..].starts_with("http://") || raw[pos..].starts_with("https://") {
+            let window_start = pos.saturating_sub(200);
+            let window_end = (pos + 200).min(raw.len());
+            let window = &raw[window_start..window_end];
+            let (url, url_hint) = extract_url_or_hint_from_window(window)
+                .unwrap_or_else(|| (Some(read_url_from(raw, pos)), None));
+            let method = extract_method_from_window(window);
+            let headers = extract_headers_from_window(window);
+            let body = extract_body_keys(window).or_else(|| extract_body_hint(window));
+            let source = if window.contains("fetch(") {
+                "fetch"
+            } else if window.contains("axios") {
+                "axios"
+            } else if window.contains("XMLHttpRequest") || window.contains(".open(") {
+                "xhr"
+            } else {
+                "url-literal"
+            };
+            out.push(RequestParts {
+                source,
+                method,
+                url,
+                url_hint,
+                headers,
+                body,
+            });
+        }
+        cursor = pos + 4;
+    }
+    out
+}
+
+fn extract_method(raw: &str) -> Option<String> {
+    for m in ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"] {
+        if raw.contains(m) {
+            return Some(m.to_string());
+        }
+    }
+    if raw.contains("method") {
+        for m in ["get", "post", "put", "patch", "delete"] {
+            if raw.to_lowercase().contains(m) {
+                return Some(m.to_uppercase());
+            }
+        }
+    }
+    None
+}
+
+fn extract_url(raw: &str) -> Option<String> {
+    if let Some(idx) = raw.find("http://") {
+        return Some(read_url_from(raw, idx));
+    }
+    if let Some(idx) = raw.find("https://") {
+        return Some(read_url_from(raw, idx));
+    }
+    if let Some(idx) = raw.find("fetch(") {
+        if let Some(u) = extract_quoted(raw, idx + 6) {
+            return Some(u);
+        }
+    }
+    None
+}
+
+fn extract_url_or_hint_from_window(raw: &str) -> Option<(Option<String>, Option<String>)> {
+    if let Some(tpl) = extract_template_url(raw) {
+        return Some((Some(tpl), None));
+    }
+    if let Some(concat) = extract_concat_url(raw) {
+        return Some((Some(concat), None));
+    }
+    if let Some(decoded) = extract_base64_url(raw) {
+        return Some((Some(decoded), None));
+    }
+    if let Some(idx) = raw.find("http://") {
+        return Some((Some(read_url_from(raw, idx)), None));
+    }
+    if let Some(idx) = raw.find("https://") {
+        return Some((Some(read_url_from(raw, idx)), None));
+    }
+    if let Some(hint) = extract_xhr_url_hint(raw) {
+        return Some((None, Some(hint)));
+    }
+    if let Some(idx) = raw.find("fetch(") {
+        if let Some(hint) = extract_first_arg_token(raw, idx + 6) {
+            return Some((None, Some(hint)));
+        }
+    }
+    None
+}
+
+fn read_url_from(raw: &str, idx: usize) -> String {
+    let bytes = raw.as_bytes();
+    let mut end = idx;
+    while end < bytes.len() {
+        let b = bytes[end];
+        if b.is_ascii_whitespace() || b == b'\'' || b == b'"' || b == b')' {
+            break;
+        }
+        end += 1;
+    }
+    raw[idx..end].to_string()
+}
+
+fn extract_first_arg_token(raw: &str, start: usize) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut i = start.min(bytes.len());
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    if bytes[i] == b'\'' || bytes[i] == b'"' {
+        return extract_quoted(raw, i);
+    }
+    let mut end = i;
+    while end < bytes.len() {
+        let b = bytes[end];
+        if b == b',' || b == b')' || b == b'\n' || b == b'\r' {
+            break;
+        }
+        if b.is_ascii_whitespace() {
+            break;
+        }
+        end += 1;
+    }
+    if end > i {
+        let token = raw[i..end].trim();
+        if token.len() <= 64 && !token.is_empty() {
+            return Some(token.to_string());
+        }
+    }
+    None
+}
+
+fn extract_xhr_url_hint(raw: &str) -> Option<String> {
+    let idx = raw.find(".open(")?;
+    let after = idx + 6;
+    let bytes = raw.as_bytes();
+    let mut i = after.min(bytes.len());
+    // skip first arg (method)
+    let mut commas = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b',' {
+            commas += 1;
+            i += 1;
+            if commas == 1 {
+                break;
+            }
+        } else if b == b')' || b == b'\n' || b == b'\r' {
+            break;
+        } else {
+            i += 1;
+        }
+    }
+    if commas == 1 {
+        return extract_first_arg_token(raw, i);
+    }
+    None
+}
+
+fn extract_concat_url(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' || bytes[i] == b'"' {
+            let quote = bytes[i];
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != quote {
+                j += 1;
+            }
+            if j <= bytes.len() {
+                let token = &raw[start..j];
+                if token.contains("http://") || token.contains("https://") {
+                    let mut out = token.to_string();
+                    let mut k = j + 1;
+                    let mut parts = 0usize;
+                    while k < bytes.len() && parts < 4 {
+                        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                            k += 1;
+                        }
+                        if k < bytes.len() && bytes[k] == b'+' {
+                            k += 1;
+                            while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                                k += 1;
+                            }
+                            if k < bytes.len() && (bytes[k] == b'\'' || bytes[k] == b'"') {
+                                let q2 = bytes[k];
+                                let s2 = k + 1;
+                                let mut e2 = s2;
+                                while e2 < bytes.len() && bytes[e2] != q2 {
+                                    e2 += 1;
+                                }
+                                if e2 <= bytes.len() {
+                                    out.push_str(&raw[s2..e2]);
+                                    k = e2 + 1;
+                                    parts += 1;
+                                    continue;
+                                }
+                            }
+                        }
+                        if raw[k..].starts_with(".concat(") {
+                            k += ".concat(".len();
+                            while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                                k += 1;
+                            }
+                            if k < bytes.len() && (bytes[k] == b'\'' || bytes[k] == b'"') {
+                                let q2 = bytes[k];
+                                let s2 = k + 1;
+                                let mut e2 = s2;
+                                while e2 < bytes.len() && bytes[e2] != q2 {
+                                    e2 += 1;
+                                }
+                                if e2 <= bytes.len() {
+                                    out.push_str(&raw[s2..e2]);
+                                    k = e2 + 1;
+                                    parts += 1;
+                                    continue;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    return Some(out);
+                }
+            }
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    None
+}
+
+fn extract_template_url(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let mut j = i + 1;
+            let mut out = String::new();
+            while j < bytes.len() {
+                if bytes[j] == b'`' {
+                    break;
+                }
+                if bytes[j] == b'$' && j + 1 < bytes.len() && bytes[j + 1] == b'{' {
+                    out.push_str("{...}");
+                    j += 2;
+                    let mut depth = 1usize;
+                    while j < bytes.len() && depth > 0 {
+                        if bytes[j] == b'{' {
+                            depth += 1;
+                        } else if bytes[j] == b'}' {
+                            depth -= 1;
+                        }
+                        j += 1;
+                    }
+                    continue;
+                }
+                out.push(bytes[j] as char);
+                j += 1;
+            }
+            if out.contains("http://") || out.contains("https://") {
+                return Some(out);
+            }
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    None
+}
+
+fn extract_base64_url(raw: &str) -> Option<String> {
+    if let Some(idx) = raw.find("atob(") {
+        if let Some(b64) = extract_quoted(raw, idx + 5) {
+            if let Ok(decoded) = general_purpose::STANDARD.decode(b64.as_bytes()) {
+                if let Ok(text) = String::from_utf8(decoded) {
+                    if text.starts_with("http://") || text.starts_with("https://") {
+                        return Some(text);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(idx) = raw.find("Buffer.from(") {
+        if let Some(b64) = extract_quoted(raw, idx + 12) {
+            if raw[idx..raw.len().min(idx + 60)].contains("base64") {
+                if let Ok(decoded) = general_purpose::STANDARD.decode(b64.as_bytes()) {
+                    if let Ok(text) = String::from_utf8(decoded) {
+                        if text.starts_with("http://") || text.starts_with("https://") {
+                            return Some(text);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_quoted(raw: &str, start: usize) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut i = start.min(bytes.len());
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    let quote = bytes[i];
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    i += 1;
+    let start_q = i;
+    while i < bytes.len() && bytes[i] != quote {
+        i += 1;
+    }
+    if i > start_q {
+        return Some(raw[start_q..i].to_string());
+    }
+    None
+}
+
+fn extract_headers(raw: &str) -> Vec<String> {
+    let mut headers = Vec::new();
+    for line in raw.lines() {
+        let l = line.trim();
+        if let Some(rest) = l.strip_prefix("-H ") {
+            if let Some(name) = rest.split(':').next() {
+                headers.push(name.trim_matches('"').trim_matches('\'').to_string());
+            }
+        } else if l.contains(':') && !l.starts_with("http") {
+            let name = l.split(':').next().unwrap_or("");
+            if name.len() <= 40 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' ) {
+                headers.push(name.to_string());
+            }
+        }
+    }
+    headers.sort();
+    headers.dedup();
+    headers.truncate(4);
+    headers
+}
+
+fn extract_headers_from_window(raw: &str) -> Vec<String> {
+    let mut headers = extract_headers(raw);
+    if raw.contains("setRequestHeader") {
+        let mut cursor = 0usize;
+        while let Some(idx) = raw[cursor..].find("setRequestHeader(") {
+            let pos = cursor + idx + "setRequestHeader(".len();
+            if let Some(name) = extract_quoted(raw, pos) {
+                headers.push(name);
+            }
+            cursor = pos;
+        }
+    }
+    headers.sort();
+    headers.dedup();
+    headers.truncate(6);
+    headers
+}
+
+fn extract_method_from_window(raw: &str) -> Option<String> {
+    if let Some(idx) = raw.find(".open(") {
+        if let Some(m) = extract_quoted(raw, idx + 6) {
+            return Some(m.to_uppercase());
+        }
+    }
+    extract_method(raw)
+}
+
+fn extract_headers_block(raw: &str, key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lower = raw.to_lowercase();
+    if let Some(idx) = lower.find(key) {
+        let snippet = &raw[idx..raw.len().min(idx + 400)];
+        let bytes = snippet.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'\'' || bytes[i] == b'"' {
+                let quote = bytes[i];
+                let start = i + 1;
+                let mut j = start;
+                while j < bytes.len() && bytes[j] != quote {
+                    j += 1;
+                }
+                if j < bytes.len() {
+                    let token = &snippet[start..j];
+                    let mut k = j + 1;
+                    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                        k += 1;
+                    }
+                    if k < bytes.len() && bytes[k] == b':' {
+                        if looks_like_header_name(token) {
+                            out.push(token.to_string());
+                        }
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+            i += 1;
+        }
+    }
+    out.sort();
+    out.dedup();
+    out.truncate(6);
+    out
+}
+
+fn looks_like_header_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.len() < 2 || trimmed.len() > 40 {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    let common = [
+        "authorization",
+        "content-type",
+        "accept",
+        "user-agent",
+        "referer",
+        "origin",
+        "cookie",
+        "x-api-key",
+        "x-auth-token",
+        "x-csrf-token",
+        "x-requested-with",
+    ];
+    if common.contains(&lower.as_str()) {
+        return true;
+    }
+    if trimmed.starts_with("X-") || trimmed.starts_with("x-") {
+        return true;
+    }
+    trimmed.contains('-')
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+fn extract_curl_method(line: &str) -> Option<String> {
+    if let Some(idx) = line.find("-X ") {
+        let rest = &line[idx + 3..];
+        let m = rest.split_whitespace().next()?;
+        return Some(m.to_uppercase());
+    }
+    None
+}
+
+fn extract_curl_header(line: &str) -> Option<String> {
+    if let Some(idx) = line.find("-H ") {
+        let rest = &line[idx + 3..];
+        let val = rest.trim_matches('"').trim_matches('\'');
+        let name = val.split(':').next()?;
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn extract_curl_body(line: &str) -> Option<String> {
+    if line.contains("--data") || line.contains("--data-raw") || line.contains("-d ") {
+        if let Some(keys) = extract_body_keys(line) {
+            return Some(keys);
+        }
+        return Some("present".to_string());
+    }
+    None
+}
+
+fn extract_curl_url(line: &str) -> Option<String> {
+    if let Some(idx) = line.find("http://") {
+        return Some(read_url_from(line, idx));
+    }
+    if let Some(idx) = line.find("https://") {
+        return Some(read_url_from(line, idx));
+    }
+    None
+}
+
+fn extract_body_hint(raw: &str) -> Option<String> {
+    let lower = raw.to_lowercase();
+    if lower.contains("--data") || lower.contains("data:") || lower.contains("body:") {
+        if let Some(keys) = extract_body_keys(raw) {
+            return Some(keys);
+        }
+        return Some("present".to_string());
+    }
+    None
+}
+
+fn extract_curl_block(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut capture = false;
+    for line in raw.lines() {
+        let l = line.trim_end();
+        if l.trim_start().starts_with("curl ") {
+            capture = true;
+        }
+        if capture {
+            out.push_str(l.trim_start());
+            out.push('\n');
+            if !l.ends_with('\\') {
+                break;
+            }
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn extract_body_keys(raw: &str) -> Option<String> {
+    let mut keys = Vec::new();
+    for cap in raw.split(|c| c == '"' || c == '\'') {
+        if cap.contains(':') {
+            let name = cap.split(':').next().unwrap_or("").trim();
+            if !name.is_empty() && name.len() <= 30 {
+                let lower = name.to_lowercase();
+                if lower == "http" || lower == "https" || lower.contains("://") {
+                    continue;
+                }
+                if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                    keys.push(name.to_string());
+                }
+            }
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    if keys.is_empty() {
+        None
+    } else {
+        keys.truncate(5);
+        Some(format!("keys: {}", keys.join(",")))
+    }
 }
 
 fn style_context_line(line: &str) -> String {

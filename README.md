@@ -130,6 +130,7 @@ Important flags:
 - `--emit-tags <TAGS>`: Comma-separated tag emissions (e.g. `url`). Adds tagged findings without treating them as secrets.
 - `--deep-scan`: Adds a “story” for each match (counts, nearest neighbor distance, and nearby call-sites)
 - `--flow-scan`: Adds lightweight control-flow context using heuristics (no AST). Skips non-code files automatically.
+- `--request-trace`: Adds HTTP request context (method, URL, headers, body hint) for secrets when detected
 
 ---
 

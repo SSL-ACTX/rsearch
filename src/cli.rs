@@ -58,4 +58,16 @@ pub struct Cli {
     /// Enable flow-scan heuristics (control-flow context without AST)
     #[arg(long)]
     pub flow_scan: bool,
+
+    /// Emit request trace context for secrets and run standalone HTTP request tracing
+    #[arg(long)]
+    pub request_trace: bool,
+
+    /// Scan only added lines in git diff
+    #[arg(long)]
+    pub diff: bool,
+
+    /// Git diff base (e.g., HEAD, main, origin/main)
+    #[arg(long, default_value_t = String::from("HEAD"))]
+    pub diff_base: String,
 }
