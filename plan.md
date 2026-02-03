@@ -5,9 +5,9 @@ Status legend: done | in-progress | planned
 - Adaptive Confidence Engine: per-finding confidence score with explainable signals and tunable risk profiles. **Status:** in-progress
 - Context Graph: lightweight flow graph around findings (call-chain + ownership + data-path hints) rendered as a compact TUI tree. **Status:** done
 - Secret Lineage: track repeated tokens across files and show “origin → propagation” chains. **Status:** done
-- Smart Suppression: auto-generated suppression rules with “why” and confidence-based decay. **Status:** in-progress
-	- Current: multi-signal suppression hints (rule + reasons + confidence) with decay window.
-	- Next: add config to accept/ignore hints and persist accepted suppressions.
+- Smart Suppression: auto-generated suppression rules with “why” and confidence-based decay. **Status:** done
+	- Done: multi-signal suppression hints (rule + reasons + confidence) with decay window.
+	- Done: load suppression rules (`--suppress`) and export hints (`--suppress-out`).
 - Risk Heatmap: file-level heat scores, top hotspots, and “top 10 risky files” summary. **Status:** done
 - Token Typing: classify likely token types (JWT, AWS key, GitHub PAT, Stripe, etc.) with non-regex heuristics. **Status:** done
 - Secure Diff Mode: scan only newly added lines in git diffs with a high-signal summary. **Status:** done

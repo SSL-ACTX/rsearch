@@ -8,7 +8,7 @@ use log::{error, info};
 
 use crate::cli::Cli;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct MatchRecord {
     pub source: String,
     pub kind: String,

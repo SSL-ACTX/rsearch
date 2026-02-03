@@ -63,6 +63,14 @@ pub struct Cli {
     #[arg(long)]
     pub request_trace: bool,
 
+    /// Load suppression rules from a file (one rule per line)
+    #[arg(long)]
+    pub suppress: Option<String>,
+
+    /// Write suppression hints to a file (appends)
+    #[arg(long)]
+    pub suppress_out: Option<String>,
+
     /// Scan only added lines in git diff
     #[arg(long)]
     pub diff: bool,

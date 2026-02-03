@@ -1,6 +1,6 @@
 use rsearch::cli::Cli;
 use rsearch::output::{build_output_mode, finalize_output, handle_output};
-use rsearch::scan::{load_diff_map, run_analysis, run_recursive_scan, DiffSummary, Heatmap, Lineage};
+use rsearch::scan::{load_diff_map, load_suppression_rules, run_analysis, run_recursive_scan, DiffSummary, Heatmap, Lineage};
 use clap::CommandFactory;
 use clap::Parser;
 use log::{error, info, warn};
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 mod tests {
-    use rsearch::scan::{build_attack_surface_links, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary};
+    use rsearch::scan::{apply_suppression_rules, build_attack_surface_links, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, SuppressionRule};
     use rsearch::output::MatchRecord;
 
     #[test]
@@ -96,6 +96,24 @@ fetch(`${API_BASE_URL}/api/projects`);
         assert!(!hints.is_empty());
         assert!(hints[0].rule.contains("id:"));
     }
+
+    #[test]
+    fn suppression_rules_filter_matches() {
+        let recs = vec![MatchRecord {
+            source: "src/app.js".to_string(),
+            kind: "keyword".to_string(),
+            matched: "token".to_string(),
+            line: 10,
+            col: 5,
+            entropy: None,
+            context: "token".to_string(),
+            identifier: Some("apiToken".to_string()),
+        }];
+        let rules = vec![SuppressionRule::Id("apiToken".to_string())];
+        let (filtered, suppressed) = apply_suppression_rules(&recs, &rules);
+        assert_eq!(suppressed, 1);
+        assert!(filtered.is_empty());
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -148,6 +166,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let suppression_rules = cli
+        .suppress
+        .as_deref()
+        .map(load_suppression_rules)
+        .unwrap_or_default();
+
     for input in &cli.target {
         if input.starts_with("http") {
             info!("Streaming {}", input);
@@ -169,6 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Some(&heatmap),
                                 Some(&lineage),
                                 Some(&diff_summary),
+                                Some(&suppression_rules),
                                 diff_map.as_ref(),
                             );
                             handle_output(&output_mode, &cli, &out, recs, None, input);
@@ -186,6 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(&heatmap),
                 Some(&lineage),
                 Some(&diff_summary),
+                Some(&suppression_rules),
                 diff_map.as_ref(),
             );
         }

@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::process::Command;
+use std::fs;
 
 use crate::cli::Cli;
 use crate::entropy::{scan_for_requests, scan_for_secrets};
@@ -42,6 +43,7 @@ pub fn run_analysis(
     heatmap: Option<&Arc<Mutex<Heatmap>>>,
     lineage: Option<&Arc<Mutex<Lineage>>>,
     diff_summary: Option<&Arc<Mutex<DiffSummary>>>,
+    suppression_rules: Option<&[SuppressionRule]>,
     diff_map: Option<&DiffMap>,
 ) -> (String, Vec<MatchRecord>) {
     let mut file_output = String::new();
@@ -95,6 +97,20 @@ pub fn run_analysis(
         file_output.push_str(&s);
         records.append(&mut r);
     }
+
+    if let Some(rules) = suppression_rules {
+        let (filtered, suppressed) = apply_suppression_rules(&records, rules);
+        records = filtered;
+        if suppressed > 0 && !cli.json {
+            use owo_colors::OwoColorize;
+            let _ = writeln!(
+                file_output,
+                "{} suppressed {} finding(s) via rules",
+                "🧹".bright_yellow().bold(),
+                suppressed
+            );
+        }
+    };
 
     let endpoint_hints = extract_attack_surface_hints(bytes);
     let attack_links = build_attack_surface_links(&records, &endpoint_hints);
@@ -192,7 +208,7 @@ pub fn run_analysis(
                 );
             }
         }
-        for hint in suppression_hints {
+        for hint in &suppression_hints {
             records.push(MatchRecord {
                 source: source_label.to_string(),
                 kind: "suppression-hint".to_string(),
@@ -203,6 +219,12 @@ pub fn run_analysis(
                 context: format!("{}; decay {}d", hint.reason, hint.decay_days),
                 identifier: None,
             });
+        }
+    }
+
+    if let Some(path) = cli.suppress_out.as_deref() {
+        if !suppression_hints.is_empty() {
+            let _ = write_suppression_hints(path, &suppression_hints);
         }
     }
 
@@ -236,6 +258,7 @@ pub fn run_recursive_scan(
     heatmap: Option<&Arc<Mutex<Heatmap>>>,
     lineage: Option<&Arc<Mutex<Lineage>>>,
     diff_summary: Option<&Arc<Mutex<DiffSummary>>>,
+    suppression_rules: Option<&[SuppressionRule]>,
     diff_map: Option<&DiffMap>,
 ) {
     let exclude_matcher = build_exclude_matcher(&cli.exclude);
@@ -294,6 +317,7 @@ pub fn run_recursive_scan(
                                     heatmap,
                                     lineage,
                                     diff_summary,
+                                    suppression_rules,
                                     diff_map,
                                 );
                                 handle_output(output_mode, cli, &out, recs, Some(path), &path.to_string_lossy());
@@ -414,6 +438,12 @@ pub struct SuppressionHint {
     pub col: usize,
 }
 
+#[derive(Clone)]
+pub enum SuppressionRule {
+    Id(String),
+    SourceLineKind { source: String, line: usize, kind: String },
+}
+
 pub fn build_attack_surface_links(
     records: &[MatchRecord],
     hints: &[EndpointHint],
@@ -464,6 +494,91 @@ pub fn build_suppression_hints(records: &[MatchRecord]) -> Vec<SuppressionHint> 
         }
     }
     deduped
+}
+
+pub fn load_suppression_rules(path: &str) -> Vec<SuppressionRule> {
+    let mut rules = Vec::new();
+    let Ok(text) = fs::read_to_string(path) else {
+        return rules;
+    };
+    for line in text.lines() {
+        let raw = line.trim();
+        if raw.is_empty() || raw.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = raw.strip_prefix("id:") {
+            let id = rest.trim();
+            if !id.is_empty() {
+                rules.push(SuppressionRule::Id(id.to_string()));
+            }
+            continue;
+        }
+        let mut parts = raw.rsplitn(3, ':').collect::<Vec<_>>();
+        if parts.len() == 3 {
+            let kind = parts.remove(0).to_string();
+            let line_str = parts.remove(0);
+            let source = parts.remove(0).to_string();
+            if let Ok(line) = line_str.parse::<usize>() {
+                rules.push(SuppressionRule::SourceLineKind { source, line, kind });
+                continue;
+            }
+        }
+    }
+    rules
+}
+
+pub fn apply_suppression_rules(
+    records: &[MatchRecord],
+    rules: &[SuppressionRule],
+) -> (Vec<MatchRecord>, usize) {
+    if rules.is_empty() {
+        return (records.to_vec(), 0);
+    }
+    let mut kept = Vec::new();
+    let mut suppressed = 0usize;
+    for rec in records {
+        if rec.kind == "suppression-hint" {
+            kept.push(rec.clone());
+            continue;
+        }
+        if should_suppress(rec, rules) {
+            suppressed += 1;
+            continue;
+        }
+        kept.push(rec.clone());
+    }
+    (kept, suppressed)
+}
+
+fn should_suppress(rec: &MatchRecord, rules: &[SuppressionRule]) -> bool {
+    for rule in rules {
+        match rule {
+            SuppressionRule::Id(id) => {
+                if rec.identifier.as_deref() == Some(id.as_str()) {
+                    return true;
+                }
+            }
+            SuppressionRule::SourceLineKind { source, line, kind } => {
+                if rec.line == *line && rec.kind == *kind && rec.source.contains(source) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn write_suppression_hints(path: &str, hints: &[SuppressionHint]) -> std::io::Result<()> {
+    use std::io::Write as IoWrite;
+    let mut file = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    for hint in hints {
+        let _ = writeln!(
+            file,
+            "{} # {} | conf {}/10 | decay {}d",
+            hint.rule, hint.reason, hint.confidence, hint.decay_days
+        );
+    }
+    Ok(())
 }
 
 pub fn extract_attack_surface_hints(bytes: &[u8]) -> Vec<EndpointHint> {
