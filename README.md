@@ -141,6 +141,8 @@ Important flags:
 
 When running in human output mode, rsearch also prints a **Risk Heatmap** summary at the end of the scan (top files by weighted score) and a **Secret Lineage** summary that highlights repeated tokens across files (origin → propagation). Attack surface hints now classify endpoints (public/localhost/internal/relative) and link request-trace calls to nearby endpoints.
 
+In deep-scan mode, rsearch also emits **Suppression Hints** (experimental) for likely false positives, with a suggested rule, reason, and confidence.
+
 `--flow-scan` is a control-flow context pass that tries to associate each match with surrounding structure without parsing an AST by default. It emits a compact, TUI-friendly single-line summary and reports scope and control hints such as:
 
 - Scope kind/name and source location

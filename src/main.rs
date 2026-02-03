@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 mod tests {
-    use rsearch::scan::{build_attack_surface_links, classify_endpoint, extract_attack_surface_hints, DiffSummary};
+    use rsearch::scan::{build_attack_surface_links, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary};
     use rsearch::output::MatchRecord;
 
     #[test]
@@ -78,6 +78,23 @@ fetch(`${API_BASE_URL}/api/projects`);
         let out = summary.render().unwrap_or_default();
         assert!(out.contains("Diff Summary"));
         assert!(out.contains("keyword"));
+    }
+
+    #[test]
+    fn suppression_hints_generated_for_examples() {
+        let recs = vec![MatchRecord {
+            source: "src/app.js".to_string(),
+            kind: "keyword".to_string(),
+            matched: "token".to_string(),
+            line: 10,
+            col: 5,
+            entropy: None,
+            context: "// example token for docs".to_string(),
+            identifier: Some("exampleToken".to_string()),
+        }];
+        let hints = build_suppression_hints(&recs);
+        assert!(!hints.is_empty());
+        assert!(hints[0].rule.contains("id:"));
     }
 }
 

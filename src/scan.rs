@@ -176,6 +176,35 @@ pub fn run_analysis(
         }
     }
 
+    let suppression_hints = build_suppression_hints(&records);
+    if !suppression_hints.is_empty() {
+        if !cli.json {
+            use owo_colors::OwoColorize;
+            let _ = writeln!(file_output, "{}", "🧯 Suppression Hints".bright_cyan().bold());
+            for hint in suppression_hints.iter().take(5) {
+                let _ = writeln!(
+                    file_output,
+                    "  • {} — {} (conf {}/10)",
+                    hint.rule.bright_white(),
+                    hint.reason.dimmed(),
+                    hint.confidence
+                );
+            }
+        }
+        for hint in suppression_hints {
+            records.push(MatchRecord {
+                source: source_label.to_string(),
+                kind: "suppression-hint".to_string(),
+                matched: hint.rule.clone(),
+                line: hint.line,
+                col: hint.col,
+                entropy: None,
+                context: hint.reason.clone(),
+                identifier: None,
+            });
+        }
+    }
+
     if let Some(map) = heatmap {
         if let Ok(mut guard) = map.lock() {
             guard.update(source_label, &records);
@@ -375,6 +404,14 @@ pub struct AttackSurfaceLink {
     pub class: &'static str,
 }
 
+pub struct SuppressionHint {
+    pub rule: String,
+    pub reason: String,
+    pub confidence: u8,
+    pub line: usize,
+    pub col: usize,
+}
+
 pub fn build_attack_surface_links(
     records: &[MatchRecord],
     hints: &[EndpointHint],
@@ -391,6 +428,39 @@ pub fn build_attack_surface_links(
     }
 
     out
+}
+
+pub fn build_suppression_hints(records: &[MatchRecord]) -> Vec<SuppressionHint> {
+    let mut out = Vec::new();
+    for rec in records {
+        if rec.kind != "entropy" && rec.kind != "keyword" {
+            continue;
+        }
+        let reason = suppression_reason(rec);
+        if let Some((reason, confidence)) = reason {
+            let rule = if let Some(id) = rec.identifier.as_ref() {
+                format!("id:{}", id)
+            } else {
+                format!("{}:{}:{}", rec.source, rec.line, rec.kind)
+            };
+            out.push(SuppressionHint {
+                rule,
+                reason,
+                confidence,
+                line: rec.line,
+                col: rec.col,
+            });
+        }
+    }
+
+    let mut deduped = Vec::new();
+    let mut seen = HashSet::new();
+    for hint in out {
+        if seen.insert(hint.rule.clone()) {
+            deduped.push(hint);
+        }
+    }
+    deduped
 }
 
 pub fn extract_attack_surface_hints(bytes: &[u8]) -> Vec<EndpointHint> {
@@ -722,6 +792,26 @@ fn find_best_link(rec: &MatchRecord, hints: &[EndpointHint]) -> Option<AttackSur
     })
 }
 
+fn suppression_reason(rec: &MatchRecord) -> Option<(String, u8)> {
+    let ctx = rec.context.to_lowercase();
+    let id = rec.identifier.as_deref().unwrap_or("").to_lowercase();
+    let keywords = ["example", "sample", "demo", "test", "placeholder", "dummy", "mock"];
+    if keywords.iter().any(|k| ctx.contains(k) || id.contains(k)) {
+        return Some(("example/test context detected".to_string(), 7));
+    }
+    if ctx.contains("localhost") || ctx.contains("127.0.0.1") {
+        return Some(("local/dev context detected".to_string(), 6));
+    }
+    if rec.kind == "entropy" {
+        if let Some(entropy) = rec.entropy {
+            if entropy < 4.9 {
+                return Some(("low entropy margin".to_string(), 5));
+            }
+        }
+    }
+    None
+}
+
 pub fn is_excluded_path(path: &Path, matcher: &Gitignore) -> bool {
     matcher.matched(path, path.is_dir()).is_ignore()
 }
@@ -821,6 +911,9 @@ impl Heatmap {
         }
         let entry = self.files.entry(source.to_string()).or_default();
         for rec in recs {
+            if rec.kind == "suppression-hint" {
+                continue;
+            }
             entry.matches += 1;
             let mut weight = 1.0;
             if rec.kind == "entropy" {
@@ -906,6 +999,9 @@ impl DiffSummary {
         }
         let entry = self.files.entry(source.to_string()).or_default();
         for rec in recs {
+            if rec.kind == "suppression-hint" {
+                continue;
+            }
             entry.matches += 1;
             self.totals.matches += 1;
             match rec.kind.as_str() {
