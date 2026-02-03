@@ -1,6 +1,6 @@
 use argus::cli::Cli;
 use argus::output::{build_output_mode, finalize_output, handle_output};
-use argus::scan::{load_diff_map, load_suppression_rules, run_analysis, run_recursive_scan, DiffSummary, Heatmap, Lineage};
+use argus::scan::{load_diff_map, load_suppression_rules, run_analysis, run_recursive_scan, DiffSummary, Heatmap, Lineage, SuppressionAuditTracker};
 use clap::CommandFactory;
 use clap::Parser;
 use log::{error, info, warn};
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 mod tests {
-    use argus::scan::{apply_suppression_rules, build_attack_surface_links, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, SuppressionRule};
+    use argus::scan::{apply_suppression_rules, build_attack_surface_links, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, SuppressionAuditTracker, SuppressionRule};
     use argus::entropy::adaptive_confidence_entropy;
     use argus::output::MatchRecord;
 
@@ -129,6 +129,47 @@ fetch(`${API_BASE_URL}/api/projects`);
         assert!(signals.iter().any(|s| *s == "doc-context"));
         assert!(confidence <= 6);
     }
+
+    #[test]
+    fn suppression_audit_flags_stale_and_broad_rules() {
+        let rules = vec![
+            SuppressionRule::Id("nope".to_string()),
+            SuppressionRule::SourceLineKind {
+                source: "src/app.js".to_string(),
+                line: 10,
+                kind: "keyword".to_string(),
+            },
+        ];
+        let recs = vec![
+            MatchRecord {
+                source: "src/app.js".to_string(),
+                kind: "keyword".to_string(),
+                matched: "token".to_string(),
+                line: 10,
+                col: 5,
+                entropy: None,
+                context: "token".to_string(),
+                identifier: None,
+            },
+            MatchRecord {
+                source: "src/app.js".to_string(),
+                kind: "keyword".to_string(),
+                matched: "secret".to_string(),
+                line: 10,
+                col: 15,
+                entropy: None,
+                context: "secret".to_string(),
+                identifier: None,
+            },
+        ];
+
+        let mut tracker = SuppressionAuditTracker::new(&rules);
+        tracker.update(&recs);
+        let audit = tracker.render();
+
+        assert!(audit.iter().any(|a| a.status == "stale"));
+        assert!(audit.iter().any(|a| a.status == "broad"));
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -187,6 +228,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(load_suppression_rules)
         .unwrap_or_default();
 
+    let suppression_audit = if cli.suppression_audit && !suppression_rules.is_empty() {
+        Some(Arc::new(Mutex::new(SuppressionAuditTracker::new(
+            &suppression_rules,
+        ))))
+    } else {
+        None
+    };
+
     for input in &cli.target {
         if input.starts_with("http") {
             info!("Streaming {}", input);
@@ -208,6 +257,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Some(&heatmap),
                                 Some(&lineage),
                                 Some(&diff_summary),
+                                suppression_audit.as_ref(),
                                 Some(&suppression_rules),
                                 diff_map.as_ref(),
                             );
@@ -226,6 +276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some(&heatmap),
                 Some(&lineage),
                 Some(&diff_summary),
+                suppression_audit.as_ref(),
                 Some(&suppression_rules),
                 diff_map.as_ref(),
             );
@@ -247,6 +298,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(guard) = diff_summary.lock() {
                 if let Some(summary) = guard.render() {
                     println!("{}", summary);
+                }
+            }
+        }
+        if let Some(audit) = suppression_audit.as_ref() {
+            if let Ok(guard) = audit.lock() {
+                let entries = guard.render();
+                if !entries.is_empty() {
+                    use owo_colors::OwoColorize;
+                    println!("{}", "🧪 Suppression Audit".bright_cyan().bold());
+                    for item in entries.iter().take(8) {
+                        println!(
+                            "  • {} — {} (hits {}, kinds {}, signatures {}, sources {})",
+                            item.rule.bright_white(),
+                            item.status.dimmed(),
+                            item.hits,
+                            item.unique_kinds,
+                            item.unique_signatures,
+                            item.unique_sources
+                        );
+                    }
                 }
             }
         }

@@ -887,12 +887,14 @@ pub(crate) fn request_trace_lines(raw: &str) -> Option<Vec<String>> {
 
         let method = part
             .method
+            .as_ref()
+            .cloned()
             .or_else(|| if part.body.is_some() { Some("POST".to_string()) } else { None });
 
         if let Some(m) = method {
             lines.push(format!("    {} {}", "method".bright_magenta(), m.bright_white()));
         }
-        if let Some(u) = part.url.or_else(|| part.url_hint.clone()) {
+        if let Some(u) = part.url.as_ref().or_else(|| part.url_hint.as_ref()) {
             lines.push(format!("    {} {}", "url".bright_magenta(), u.bright_white()));
         }
 
@@ -903,8 +905,17 @@ pub(crate) fn request_trace_lines(raw: &str) -> Option<Vec<String>> {
                 part.headers.join(", ").bright_white()
             ));
         }
-        if let Some(b) = part.body {
+        if let Some(b) = part.body.as_ref() {
             lines.push(format!("    {} {}", "body".bright_magenta(), b.bright_white()));
+        }
+
+        let warnings = intent_consistency_warnings(&part, raw);
+        for warning in warnings {
+            lines.push(format!(
+                "    {} {}",
+                "intent".bright_magenta(),
+                warning.bright_yellow()
+            ));
         }
     }
 
@@ -918,6 +929,66 @@ struct RequestParts {
     url_hint: Option<String>,
     headers: Vec<String>,
     body: Option<String>,
+}
+
+fn intent_consistency_warnings(part: &RequestParts, raw: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let lower = raw.to_lowercase();
+
+    let method = part
+        .method
+        .clone()
+        .or_else(|| if part.body.is_some() { Some("POST".to_string()) } else { None })
+        .unwrap_or_default()
+        .to_uppercase();
+
+    if method.is_empty() {
+        return warnings;
+    }
+
+    let read_intent = contains_intent_word(&lower, &["get", "fetch", "list", "read", "load", "query", "search"]);
+    let create_intent = contains_intent_word(&lower, &["create", "add", "new", "insert", "register", "signup"]);
+    let update_intent = contains_intent_word(&lower, &["update", "edit", "set", "patch", "put", "save", "write"]);
+    let delete_intent = contains_intent_word(&lower, &["delete", "remove", "destroy", "revoke", "purge", "drop"]);
+
+    if method == "GET" && part.body.is_some() {
+        warnings.push("GET with body present".to_string());
+    }
+
+    if method == "GET" && (create_intent || update_intent || delete_intent) {
+        warnings.push("GET with write intent".to_string());
+    }
+
+    if method != "GET" && method != "HEAD" && read_intent {
+        warnings.push(format!("{} with read intent", method));
+    }
+
+    warnings
+}
+
+fn contains_intent_word(haystack: &str, needles: &[&str]) -> bool {
+    for needle in needles {
+        let mut idx = 0usize;
+        while let Some(pos) = haystack[idx..].find(needle) {
+            let start = idx + pos;
+            let end = start + needle.len();
+            let before = haystack[..start].chars().last();
+            let after = haystack[end..].chars().next();
+
+            let before_ok = before
+                .map(|c| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(true);
+            let after_ok = after
+                .map(|c| !c.is_ascii_alphanumeric() || c == '_' || c.is_ascii_uppercase())
+                .unwrap_or(true);
+
+            if before_ok && after_ok {
+                return true;
+            }
+            idx = end;
+        }
+    }
+    false
 }
 
 fn has_strong_request_signal(parts: &[RequestParts], raw: &str) -> bool {

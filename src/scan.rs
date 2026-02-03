@@ -43,6 +43,7 @@ pub fn run_analysis(
     heatmap: Option<&Arc<Mutex<Heatmap>>>,
     lineage: Option<&Arc<Mutex<Lineage>>>,
     diff_summary: Option<&Arc<Mutex<DiffSummary>>>,
+    suppression_audit: Option<&Arc<Mutex<SuppressionAuditTracker>>>,
     suppression_rules: Option<&[SuppressionRule]>,
     diff_map: Option<&DiffMap>,
 ) -> (String, Vec<MatchRecord>) {
@@ -96,6 +97,12 @@ pub fn run_analysis(
         );
         file_output.push_str(&s);
         records.append(&mut r);
+    }
+
+    if let Some(tracker) = suppression_audit {
+        if let Ok(mut guard) = tracker.lock() {
+            guard.update(&records);
+        }
     }
 
     if let Some(rules) = suppression_rules {
@@ -258,6 +265,7 @@ pub fn run_recursive_scan(
     heatmap: Option<&Arc<Mutex<Heatmap>>>,
     lineage: Option<&Arc<Mutex<Lineage>>>,
     diff_summary: Option<&Arc<Mutex<DiffSummary>>>,
+    suppression_audit: Option<&Arc<Mutex<SuppressionAuditTracker>>>,
     suppression_rules: Option<&[SuppressionRule]>,
     diff_map: Option<&DiffMap>,
 ) {
@@ -317,6 +325,7 @@ pub fn run_recursive_scan(
                                     heatmap,
                                     lineage,
                                     diff_summary,
+                                    suppression_audit,
                                     suppression_rules,
                                     diff_map,
                                 );
@@ -438,10 +447,95 @@ pub struct SuppressionHint {
     pub col: usize,
 }
 
+pub struct SuppressionAudit {
+    pub rule: String,
+    pub status: &'static str,
+    pub hits: usize,
+    pub unique_kinds: usize,
+    pub unique_signatures: usize,
+    pub unique_sources: usize,
+}
+
+pub struct SuppressionAuditTracker {
+    rules: Vec<SuppressionRule>,
+    hits: Vec<usize>,
+    kinds: Vec<HashSet<String>>,
+    signatures: Vec<HashSet<String>>,
+    sources: Vec<HashSet<String>>,
+}
+
 #[derive(Clone)]
 pub enum SuppressionRule {
     Id(String),
     SourceLineKind { source: String, line: usize, kind: String },
+}
+
+impl SuppressionAuditTracker {
+    pub fn new(rules: &[SuppressionRule]) -> Self {
+        let len = rules.len();
+        Self {
+            rules: rules.to_vec(),
+            hits: vec![0; len],
+            kinds: (0..len).map(|_| HashSet::new()).collect(),
+            signatures: (0..len).map(|_| HashSet::new()).collect(),
+            sources: (0..len).map(|_| HashSet::new()).collect(),
+        }
+    }
+
+    pub fn update(&mut self, records: &[MatchRecord]) {
+        if self.rules.is_empty() {
+            return;
+        }
+        for rec in records.iter().filter(|r| r.kind != "suppression-hint") {
+            let matched = match_suppression_rules(rec, &self.rules);
+            if matched.is_empty() {
+                continue;
+            }
+            let signature = if let Some(id) = rec.identifier.as_ref() {
+                format!("id:{}", id)
+            } else {
+                format!("matched:{}", rec.matched)
+            };
+            for idx in matched {
+                self.hits[idx] += 1;
+                self.kinds[idx].insert(rec.kind.clone());
+                self.signatures[idx].insert(signature.clone());
+                self.sources[idx].insert(rec.source.clone());
+            }
+        }
+    }
+
+    pub fn render(&self) -> Vec<SuppressionAudit> {
+        let mut out = Vec::new();
+        for (idx, rule) in self.rules.iter().enumerate() {
+            let hits = self.hits[idx];
+            let unique_kinds = self.kinds[idx].len();
+            let unique_signatures = self.signatures[idx].len();
+            let unique_sources = self.sources[idx].len();
+            if hits == 0 {
+                out.push(SuppressionAudit {
+                    rule: suppression_rule_label(rule),
+                    status: "stale",
+                    hits,
+                    unique_kinds,
+                    unique_signatures,
+                    unique_sources,
+                });
+                continue;
+            }
+            if unique_signatures > 1 || unique_kinds > 1 {
+                out.push(SuppressionAudit {
+                    rule: suppression_rule_label(rule),
+                    status: "broad",
+                    hits,
+                    unique_kinds,
+                    unique_signatures,
+                    unique_sources,
+                });
+            }
+        }
+        out
+    }
 }
 
 pub fn build_attack_surface_links(
@@ -551,21 +645,35 @@ pub fn apply_suppression_rules(
 }
 
 fn should_suppress(rec: &MatchRecord, rules: &[SuppressionRule]) -> bool {
-    for rule in rules {
+    !match_suppression_rules(rec, rules).is_empty()
+}
+
+fn match_suppression_rules(rec: &MatchRecord, rules: &[SuppressionRule]) -> Vec<usize> {
+    let mut matched = Vec::new();
+    for (idx, rule) in rules.iter().enumerate() {
         match rule {
             SuppressionRule::Id(id) => {
                 if rec.identifier.as_deref() == Some(id.as_str()) {
-                    return true;
+                    matched.push(idx);
                 }
             }
             SuppressionRule::SourceLineKind { source, line, kind } => {
                 if rec.line == *line && rec.kind == *kind && rec.source.contains(source) {
-                    return true;
+                    matched.push(idx);
                 }
             }
         }
     }
-    false
+    matched
+}
+
+fn suppression_rule_label(rule: &SuppressionRule) -> String {
+    match rule {
+        SuppressionRule::Id(id) => format!("id:{}", id),
+        SuppressionRule::SourceLineKind { source, line, kind } => {
+            format!("{}:{}:{}", source, line, kind)
+        }
+    }
 }
 
 fn write_suppression_hints(path: &str, hints: &[SuppressionHint]) -> std::io::Result<()> {

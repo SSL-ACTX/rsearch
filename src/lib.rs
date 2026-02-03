@@ -8,7 +8,7 @@ pub mod utils;
 
 #[cfg(test)]
 mod tests {
-    use super::entropy::{calculate_entropy, is_harmless_text, is_likely_charset, scan_for_secrets, scan_for_requests};
+    use super::entropy::{calculate_entropy, is_harmless_text, is_likely_charset, scan_for_secrets, scan_for_requests, request_trace_lines};
     use std::collections::HashSet;
     use super::keyword::process_search;
     use super::heuristics::FlowMode;
@@ -161,5 +161,13 @@ mod tests {
         assert!(out.contains("Request:"));
         assert!(!records.is_empty());
         assert!(records.iter().any(|r| r.kind == "request-trace"));
+    }
+
+    #[test]
+    fn request_trace_flags_intent_mismatch() {
+        let raw = "async function deleteUser(){return fetch(url,{method:'GET',body:'x'})}";
+        let lines = request_trace_lines(raw).unwrap_or_default();
+        assert!(lines.iter().any(|l| l.contains("intent")));
+        assert!(lines.iter().any(|l| l.contains("write intent") || l.contains("GET with body")));
     }
 }

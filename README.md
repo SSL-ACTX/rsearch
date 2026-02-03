@@ -121,6 +121,7 @@ Core flags:
 - `--diff`: Scan only added lines from a git diff and show a Diff Summary in human output
 - `--suppress <PATH>`: Load suppression rules and filter findings
 - `--suppress-out <PATH>`: Append suppression hints to a file
+- `--suppression-audit`: Report stale or overbroad suppression rules
 
 Output & controls:
 
@@ -155,7 +156,7 @@ In deep-scan mode, rsearch also emits **Suppression Hints** (experimental) for l
 
 ## Request Tracing
 
-`--request-trace` scans for HTTP calls (fetch/axios/XHR/curl), reconstructs template URLs, and classifies endpoints (public/localhost/internal/relative). In deep-scan output it also links requests to nearby endpoint hints so you can see the likely attack surface at a glance.
+`--request-trace` scans for HTTP calls (fetch/axios/XHR/curl), reconstructs template URLs, classifies endpoints (public/localhost/internal/relative), and flags intent/method mismatches (e.g., write intent with `GET`). In deep-scan output it also links requests to nearby endpoint hints so you can see the likely attack surface at a glance.
 
 ## Smart Suppression
 
@@ -165,6 +166,8 @@ Rule formats:
 
 - `id:<identifier>` — suppress by identifier name
 - `<source>:<line>:<kind>` — suppress by source path, line, and kind
+
+Use `--suppression-audit` to surface stale or overbroad rules during a scan.
 
 `--flow-scan` is a control-flow context pass that tries to associate each match with surrounding structure without parsing an AST by default. It emits a compact, TUI-friendly single-line summary and reports scope and control hints such as:
 

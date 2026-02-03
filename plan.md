@@ -9,6 +9,8 @@ Status legend: done | in-progress | planned
 - Smart Suppression: auto-generated suppression rules with “why” and confidence-based decay. **Status:** done
   - Done: multi-signal suppression hints (rule + reasons + confidence) with decay window.
   - Done: load suppression rules (`--suppress`) and export hints (`--suppress-out`).
+- Inverse Suppression Audit: detect stale or overbroad suppression rules. **Status:** done
+- Intent-Consistency Scoring: flag requests whose method/body conflict with nearby semantic intent. **Status:** done
 - Risk Heatmap: file-level heat scores, top hotspots, and “top 10 risky files” summary. **Status:** done
 - Token Typing: classify likely token types (JWT, AWS key, GitHub PAT, Stripe, etc.) with non-regex heuristics. **Status:** done
 - Secure Diff Mode: scan only newly added lines in git diffs with a high-signal summary. **Status:** done
@@ -19,7 +21,6 @@ Status legend: done | in-progress | planned
   - Done: link request-trace calls to nearby endpoint hints (context match + line proximity).
 
 ## 🧪 New Concepts (Planned, Unique)
-- **Intent-Consistency Scoring:** flag endpoints whose method/body/headers mismatch their semantic name (e.g., `deleteUser` sending `GET` or no auth header). **Status:** planned
 - **Token-Sink Provenance:** trace secret-like values to their first “sink” (network, disk, logs) and summarize the earliest leak boundary per token. **Status:** planned
 - **Ambient Credential Shadowing:** detect when a safe placeholder is later shadowed by a real secret in the same scope or file. **Status:** planned
 - **Protocol Drift Map:** detect HTTP requests that silently migrate from `https` to `http`, or from internal to public base URLs. **Status:** planned
@@ -28,7 +29,6 @@ Status legend: done | in-progress | planned
 - **API Capability Inference:** infer capability level by combining endpoints + verbs + auth context (read-only, destructive, privileged). **Status:** planned
 - **Secrets-in-Comments Escalation:** treat secrets embedded in commented code as higher risk when adjacent to live endpoints. **Status:** planned
 - **Obfuscation Signature Index:** fingerprint minifiers/packers and adjust request-trace extraction strategy per signature. **Status:** planned
-- **Inverse Suppression Audit:** detect stale suppression rules that no longer match or now hide unrelated findings. **Status:** planned
 - **Response Class Guessing:** infer expected response sensitivity based on request parameters (e.g., `token`, `password`, `refresh`). **Status:** planned
 - **Path-Depth Shock:** elevate risk when a secret appears close to deployment paths (e.g., `infra/`, `k8s/`, `terraform/`). **Status:** planned
 - **Contextual Auth Drift:** detect when a request loses auth headers within a call chain compared to nearby calls. **Status:** planned

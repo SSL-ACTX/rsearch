@@ -71,6 +71,10 @@ pub struct Cli {
     #[arg(long)]
     pub suppress_out: Option<String>,
 
+    /// Audit suppression rules for staleness or overbreadth
+    #[arg(long)]
+    pub suppression_audit: bool,
+
     /// Scan only added lines in git diff
     #[arg(long)]
     pub diff: bool,
