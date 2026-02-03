@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::output::MatchRecord;
 use crate::heuristics::{analyze_flow_context_with_mode, format_context_graph, format_flow_compact, FlowMode};
-use crate::entropy::request_trace_lines;
+use crate::entropy::{request_trace_lines, sink_provenance_hint};
 use crate::utils::{find_preceding_identifier, format_prettified_with_hint, LineFilter};
 
 pub fn process_search(
@@ -103,6 +103,11 @@ pub fn process_search(
                     .map(|id| format!("; id {}", id))
                     .unwrap_or_default();
                 let (signals, confidence) = keyword_context_signals(&raw_snippet, identifier.as_deref(), matched_word, label);
+                let sink_hint = sink_provenance_hint(&raw_snippet);
+                let sink_str = sink_hint
+                    .as_deref()
+                    .map(|s| format!("; sink {}", s))
+                    .unwrap_or_default();
                 let signals_str = if signals.is_empty() {
                     "signals n/a".to_string()
                 } else {
@@ -111,7 +116,7 @@ pub fn process_search(
 
                 let _ = writeln!(
                     out,
-                    "{} appears {} times; occurrence {}/{}; nearest neighbor {} bytes away; call-sites {}; span {} bytes; density {}/KiB; {}; conf {}/10{}{}",
+                    "{} appears {} times; occurrence {}/{}; nearest neighbor {} bytes away; call-sites {}; span {} bytes; density {}/KiB; {}; conf {}/10{}{}{}",
                     "Story:".bright_green().bold(),
                     stats.positions.len().to_string().bright_yellow(),
                     (occ_index + 1).to_string().bright_yellow(),
@@ -128,6 +133,7 @@ pub fn process_search(
                     density.to_string().bright_yellow(),
                     signals_str.bright_blue(),
                     confidence.to_string().bright_red(),
+                    sink_str,
                     match nearest_call {
                         Some((line, col, dist)) => format!("; nearest call at L:{} C:{} ({} bytes)", line, col, dist),
                         None => "; no call-sites detected".to_string(),

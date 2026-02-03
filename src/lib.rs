@@ -8,7 +8,7 @@ pub mod utils;
 
 #[cfg(test)]
 mod tests {
-    use super::entropy::{calculate_entropy, is_harmless_text, is_likely_charset, scan_for_secrets, scan_for_requests, request_trace_lines};
+    use super::entropy::{calculate_entropy, is_harmless_text, is_likely_charset, scan_for_secrets, scan_for_requests, request_trace_lines, sink_provenance_hint};
     use std::collections::HashSet;
     use super::keyword::process_search;
     use super::heuristics::FlowMode;
@@ -169,5 +169,15 @@ mod tests {
         let lines = request_trace_lines(raw).unwrap_or_default();
         assert!(lines.iter().any(|l| l.contains("intent")));
         assert!(lines.iter().any(|l| l.contains("write intent") || l.contains("GET with body")));
+    }
+
+    #[test]
+    fn sink_provenance_detects_network_and_log() {
+        let net = "requests.post(\"https://api.example.com\")";
+        let log = "console.log(secret)";
+        let disk = "fs::write(\"/tmp/out\", secret)";
+        assert_eq!(sink_provenance_hint(net).as_deref(), Some("network"));
+        assert_eq!(sink_provenance_hint(log).as_deref(), Some("log"));
+        assert_eq!(sink_provenance_hint(disk).as_deref(), Some("disk"));
     }
 }

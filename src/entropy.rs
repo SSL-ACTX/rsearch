@@ -246,6 +246,11 @@ pub fn scan_for_secrets(
                             .map(|id| format!("; id {}", id))
                             .unwrap_or_default();
                         let (signals, confidence) = context_signals(&raw_context, identifier.as_deref(), &snippet_str, score, source_label);
+                        let sink_hint = sink_provenance_hint(&raw_context);
+                        let sink_str = sink_hint
+                            .as_deref()
+                            .map(|s| format!("; sink {}", s))
+                            .unwrap_or_default();
                         let signals_str = if signals.is_empty() {
                             "signals n/a".to_string()
                         } else {
@@ -253,7 +258,7 @@ pub fn scan_for_secrets(
                         };
                         let _ = writeln!(
                             out,
-                            "{} appears {} times; nearest repeat {} bytes away; len {}; {}; {}; mix a{}% d{}% s{}%; {}; conf {}/10{}",
+                            "{} appears {} times; nearest repeat {} bytes away; len {}; {}; {}; mix a{}% d{}% s{}%; {}; conf {}/10{}{}",
                             "Story:".bright_green().bold(),
                             count.to_string().bright_yellow(),
                             nearest
@@ -268,6 +273,7 @@ pub fn scan_for_secrets(
                             other_pct.to_string().bright_magenta(),
                             signals_str.bright_blue(),
                             confidence.to_string().bright_red(),
+                            sink_str,
                             id_hint
                         );
                         let owner = preferred_owner_identifier(identifier.as_deref(), &raw_context, &snippet_str);
@@ -1140,6 +1146,54 @@ fn has_request_token(raw: &str) -> bool {
 
 fn path_has_component(path: &Path, target: &str) -> bool {
     path.components().any(|c| c.as_os_str() == target)
+}
+
+pub(crate) fn sink_provenance_hint(raw: &str) -> Option<String> {
+    let lower = raw.to_lowercase();
+
+    let network = [
+        "fetch(",
+        "axios",
+        "requests.",
+        "httpx.",
+        "xmlhttprequest",
+        ".open(",
+        "curl ",
+        "send(",
+    ];
+    let disk = [
+        "fs::write",
+        "write_file",
+        "write_to",
+        "file::create",
+        "file::open",
+        "open(",
+        "save(",
+        "write_all",
+        "to_file",
+    ];
+    let log = [
+        "console.log",
+        "println!",
+        "print(",
+        "log::",
+        "logger",
+        "warn(",
+        "error(",
+        "debug(",
+    ];
+
+    if network.iter().any(|t| lower.contains(t)) {
+        return Some("network".to_string());
+    }
+    if disk.iter().any(|t| lower.contains(t)) {
+        return Some("disk".to_string());
+    }
+    if log.iter().any(|t| lower.contains(t)) {
+        return Some("log".to_string());
+    }
+
+    None
 }
 
 fn extract_request_candidates(raw: &str) -> Vec<RequestParts> {

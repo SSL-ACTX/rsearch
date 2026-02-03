@@ -11,6 +11,7 @@ Status legend: done | in-progress | planned
   - Done: load suppression rules (`--suppress`) and export hints (`--suppress-out`).
 - Inverse Suppression Audit: detect stale or overbroad suppression rules. **Status:** done
 - Intent-Consistency Scoring: flag requests whose method/body conflict with nearby semantic intent. **Status:** done
+- Token-Sink Provenance: trace secret-like values to their first sink (network, disk, logs). **Status:** done
 - Risk Heatmap: file-level heat scores, top hotspots, and “top 10 risky files” summary. **Status:** done
 - Token Typing: classify likely token types (JWT, AWS key, GitHub PAT, Stripe, etc.) with non-regex heuristics. **Status:** done
 - Secure Diff Mode: scan only newly added lines in git diffs with a high-signal summary. **Status:** done
@@ -21,7 +22,6 @@ Status legend: done | in-progress | planned
   - Done: link request-trace calls to nearby endpoint hints (context match + line proximity).
 
 ## 🧪 New Concepts (Planned, Unique)
-- **Token-Sink Provenance:** trace secret-like values to their first “sink” (network, disk, logs) and summarize the earliest leak boundary per token. **Status:** planned
 - **Ambient Credential Shadowing:** detect when a safe placeholder is later shadowed by a real secret in the same scope or file. **Status:** planned
 - **Protocol Drift Map:** detect HTTP requests that silently migrate from `https` to `http`, or from internal to public base URLs. **Status:** planned
 - **Entropy “Surface Tension”:** compute entropy gradients across neighboring tokens to detect deliberate obfuscation layers (e.g., base64 inside base64). **Status:** planned
