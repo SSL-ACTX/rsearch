@@ -41,6 +41,7 @@ pub fn run_analysis(
     source_hint: Option<&str>,
     heatmap: Option<&Arc<Mutex<Heatmap>>>,
     lineage: Option<&Arc<Mutex<Lineage>>>,
+    diff_summary: Option<&Arc<Mutex<DiffSummary>>>,
     diff_map: Option<&DiffMap>,
 ) -> (String, Vec<MatchRecord>) {
     let mut file_output = String::new();
@@ -187,6 +188,14 @@ pub fn run_analysis(
         }
     }
 
+    if diff_map.is_some() {
+        if let Some(summary) = diff_summary {
+            if let Ok(mut guard) = summary.lock() {
+                guard.update(source_label, &records);
+            }
+        }
+    }
+
     (file_output, records)
 }
 
@@ -196,6 +205,7 @@ pub fn run_recursive_scan(
     output_mode: &OutputMode,
     heatmap: Option<&Arc<Mutex<Heatmap>>>,
     lineage: Option<&Arc<Mutex<Lineage>>>,
+    diff_summary: Option<&Arc<Mutex<DiffSummary>>>,
     diff_map: Option<&DiffMap>,
 ) {
     let exclude_matcher = build_exclude_matcher(&cli.exclude);
@@ -253,6 +263,7 @@ pub fn run_recursive_scan(
                                     Some(&path.to_string_lossy()),
                                     heatmap,
                                     lineage,
+                                    diff_summary,
                                     diff_map,
                                 );
                                 handle_output(output_mode, cli, &out, recs, Some(path), &path.to_string_lossy());
@@ -857,6 +868,100 @@ impl Heatmap {
                 risk.entropy_hits,
                 risk.keyword_hits,
                 risk.max_entropy
+            );
+        }
+
+        Some(out)
+    }
+}
+
+#[derive(Default)]
+pub struct DiffSummary {
+    files: HashMap<String, DiffFileSummary>,
+    totals: DiffTotals,
+}
+
+#[derive(Default, Clone)]
+struct DiffFileSummary {
+    matches: usize,
+    entropy_hits: usize,
+    keyword_hits: usize,
+    request_hits: usize,
+    attack_hits: usize,
+}
+
+#[derive(Default, Clone)]
+struct DiffTotals {
+    matches: usize,
+    entropy_hits: usize,
+    keyword_hits: usize,
+    request_hits: usize,
+    attack_hits: usize,
+}
+
+impl DiffSummary {
+    pub fn update(&mut self, source: &str, recs: &[MatchRecord]) {
+        if recs.is_empty() {
+            return;
+        }
+        let entry = self.files.entry(source.to_string()).or_default();
+        for rec in recs {
+            entry.matches += 1;
+            self.totals.matches += 1;
+            match rec.kind.as_str() {
+                "entropy" => {
+                    entry.entropy_hits += 1;
+                    self.totals.entropy_hits += 1;
+                }
+                "keyword" => {
+                    entry.keyword_hits += 1;
+                    self.totals.keyword_hits += 1;
+                }
+                "request-trace" => {
+                    entry.request_hits += 1;
+                    self.totals.request_hits += 1;
+                }
+                "attack-surface" | "attack-surface-link" => {
+                    entry.attack_hits += 1;
+                    self.totals.attack_hits += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn render(&self) -> Option<String> {
+        if self.files.is_empty() {
+            return None;
+        }
+        let mut entries: Vec<(&String, &DiffFileSummary)> = self.files.iter().collect();
+        entries.sort_by(|a, b| b.1.matches.cmp(&a.1.matches));
+
+        let mut out = String::new();
+        use owo_colors::OwoColorize;
+        let _ = writeln!(out, "\n🧪 Diff Summary (added lines)");
+        let _ = writeln!(out, "{}", "━".repeat(60).dimmed());
+        let _ = writeln!(
+            out,
+            "Totals: {} hits | entropy {} | keyword {} | request {} | attack {}",
+            self.totals.matches,
+            self.totals.entropy_hits,
+            self.totals.keyword_hits,
+            self.totals.request_hits,
+            self.totals.attack_hits
+        );
+
+        for (idx, (path, summary)) in entries.iter().take(5).enumerate() {
+            let _ = writeln!(
+                out,
+                "{}. {} — hits {} (entropy {}, keyword {}, request {}, attack {})",
+                idx + 1,
+                path.bright_cyan(),
+                summary.matches,
+                summary.entropy_hits,
+                summary.keyword_hits,
+                summary.request_hits,
+                summary.attack_hits
             );
         }
 

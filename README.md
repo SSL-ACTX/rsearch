@@ -131,6 +131,7 @@ Important flags:
 - `--deep-scan`: Adds a “story” for each match (counts, nearest neighbor distance, and nearby call-sites)
 - `--flow-scan`: Adds lightweight control-flow context using heuristics (no AST). Skips non-code files automatically.
 - `--request-trace`: Adds HTTP request context (method, URL, headers, body hint) for secrets and also runs standalone request tracing for real HTTP calls
+- `--diff`: Scan only added lines from a git diff and show a Diff Summary in human output
 
 ---
 

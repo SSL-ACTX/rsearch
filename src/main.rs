@@ -1,6 +1,6 @@
 use rsearch::cli::Cli;
 use rsearch::output::{build_output_mode, finalize_output, handle_output};
-use rsearch::scan::{load_diff_map, run_analysis, run_recursive_scan, Heatmap, Lineage};
+use rsearch::scan::{load_diff_map, run_analysis, run_recursive_scan, DiffSummary, Heatmap, Lineage};
 use clap::CommandFactory;
 use clap::Parser;
 use log::{error, info, warn};
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 mod tests {
-    use rsearch::scan::{build_attack_surface_links, classify_endpoint, extract_attack_surface_hints};
+    use rsearch::scan::{build_attack_surface_links, classify_endpoint, extract_attack_surface_hints, DiffSummary};
     use rsearch::output::MatchRecord;
 
     #[test]
@@ -58,6 +58,27 @@ fetch(`${API_BASE_URL}/api/projects`);
         assert!(links.iter().any(|l| l.endpoint.contains("/api/projects")));
         assert!(links.iter().any(|l| l.class == "localhost"));
     }
+
+    #[test]
+    fn diff_summary_renders() {
+        let mut summary = DiffSummary::default();
+        summary.update(
+            "src/lib.rs",
+            &[MatchRecord {
+                source: "src/lib.rs".to_string(),
+                kind: "keyword".to_string(),
+                matched: "token".to_string(),
+                line: 1,
+                col: 1,
+                entropy: None,
+                context: "token".to_string(),
+                identifier: None,
+            }],
+        );
+        let out = summary.render().unwrap_or_default();
+        assert!(out.contains("Diff Summary"));
+        assert!(out.contains("keyword"));
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -102,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let heatmap = Arc::new(Mutex::new(Heatmap::default()));
     let lineage = Arc::new(Mutex::new(Lineage::default()));
+    let diff_summary = Arc::new(Mutex::new(DiffSummary::default()));
 
     let diff_map = if cli.diff {
         load_diff_map(&cli.diff_base)
@@ -129,6 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Some(input),
                                 Some(&heatmap),
                                 Some(&lineage),
+                                Some(&diff_summary),
                                 diff_map.as_ref(),
                             );
                             handle_output(&output_mode, &cli, &out, recs, None, input);
@@ -145,6 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &output_mode,
                 Some(&heatmap),
                 Some(&lineage),
+                Some(&diff_summary),
                 diff_map.as_ref(),
             );
         }
@@ -159,6 +183,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(guard) = lineage.lock() {
             if let Some(summary) = guard.render() {
                 println!("{}", summary);
+            }
+        }
+        if cli.diff {
+            if let Ok(guard) = diff_summary.lock() {
+                if let Some(summary) = guard.render() {
+                    println!("{}", summary);
+                }
             }
         }
     }
