@@ -2,18 +2,36 @@
 
 Status legend: done | in-progress | planned
 
+## ✅ Completed (Done)
 - Adaptive Confidence Engine: per-finding confidence score with explainable signals and tunable risk profiles. **Status:** done
 - Context Graph: lightweight flow graph around findings (call-chain + ownership + data-path hints) rendered as a compact TUI tree. **Status:** done
 - Secret Lineage: track repeated tokens across files and show “origin → propagation” chains. **Status:** done
- -- stucked- Smart Suppression: auto-generated suppression rules with “why” and confidence-based decay. **Status:** done
-	- Done: multi-signal suppression hints (rule + reasons + confidence) with decay window.
-	- Done: load suppression rules (`--suppress`) and export hints (`--suppress-out`).
+- Smart Suppression: auto-generated suppression rules with “why” and confidence-based decay. **Status:** done
+  - Done: multi-signal suppression hints (rule + reasons + confidence) with decay window.
+  - Done: load suppression rules (`--suppress`) and export hints (`--suppress-out`).
 - Risk Heatmap: file-level heat scores, top hotspots, and “top 10 risky files” summary. **Status:** done
 - Token Typing: classify likely token types (JWT, AWS key, GitHub PAT, Stripe, etc.) with non-regex heuristics. **Status:** done
 - Secure Diff Mode: scan only newly added lines in git diffs with a high-signal summary. **Status:** done
 - Entropy Clustering: group nearby high-entropy blocks into one finding with surrounding metadata. **Status:** done
 - Attack Surface Hints: detect public endpoints + secrets in the same file and link them. **Status:** done
-	- Done: endpoint classification (public/localhost/internal/relative) with base URL constant extraction.
-	- Done: de-dup endpoints per file and attach endpoint list to attack surface records.
-	- Done: link request-trace calls to nearby endpoint hints (context match + line proximity).
-- “Story Mode” Export: a narrative report that explains why each finding matters. **Status:** planned
+  - Done: endpoint classification (public/localhost/internal/relative) with base URL constant extraction.
+  - Done: de-dup endpoints per file and attach endpoint list to attack surface records.
+  - Done: link request-trace calls to nearby endpoint hints (context match + line proximity).
+
+## 🧪 New Concepts (Planned, Unique)
+- **Intent-Consistency Scoring:** flag endpoints whose method/body/headers mismatch their semantic name (e.g., `deleteUser` sending `GET` or no auth header). **Status:** planned
+- **Token-Sink Provenance:** trace secret-like values to their first “sink” (network, disk, logs) and summarize the earliest leak boundary per token. **Status:** planned
+- **Ambient Credential Shadowing:** detect when a safe placeholder is later shadowed by a real secret in the same scope or file. **Status:** planned
+- **Protocol Drift Map:** detect HTTP requests that silently migrate from `https` to `http`, or from internal to public base URLs. **Status:** planned
+- **Entropy “Surface Tension”:** compute entropy gradients across neighboring tokens to detect deliberate obfuscation layers (e.g., base64 inside base64). **Status:** planned
+- **Lateral Linkage Graph:** connect findings across repos by shared token fragments or URL fingerprints, generating a “possible reuse” report. **Status:** planned
+- **API Capability Inference:** infer capability level by combining endpoints + verbs + auth context (read-only, destructive, privileged). **Status:** planned
+- **Secrets-in-Comments Escalation:** treat secrets embedded in commented code as higher risk when adjacent to live endpoints. **Status:** planned
+- **Obfuscation Signature Index:** fingerprint minifiers/packers and adjust request-trace extraction strategy per signature. **Status:** planned
+- **Inverse Suppression Audit:** detect stale suppression rules that no longer match or now hide unrelated findings. **Status:** planned
+- **Response Class Guessing:** infer expected response sensitivity based on request parameters (e.g., `token`, `password`, `refresh`). **Status:** planned
+- **Path-Depth Shock:** elevate risk when a secret appears close to deployment paths (e.g., `infra/`, `k8s/`, `terraform/`). **Status:** planned
+- **Contextual Auth Drift:** detect when a request loses auth headers within a call chain compared to nearby calls. **Status:** planned
+- **Endpoint Shape Morphing:** detect templated endpoints that resolve to public domains at runtime through base URL overrides. **Status:** planned
+- **Leak Velocity Score:** estimate how quickly a secret could leak based on proximity to logging, telemetry, or error paths. **Status:** planned
+- **Story Mode Export:** a narrative report that explains why each finding matters. **Status:** planned
