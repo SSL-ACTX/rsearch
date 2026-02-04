@@ -65,7 +65,7 @@ mod tests {
         let keywords = vec!["encrypt".to_string()];
         let (out, _records) = process_search(data, "test.rs", &keywords, 10, true, FlowMode::Heuristic, None);
         assert!(out.contains("Story:"));
-        assert!(out.contains("Source:"));
+        assert!(!out.contains("Source:"));
         assert!(out.contains("Flow:"));
         assert!(out.contains("scope "));
     }
