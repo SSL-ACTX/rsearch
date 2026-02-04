@@ -42,6 +42,7 @@ pub fn run_analysis(
     source_hint: Option<&str>,
     heatmap: Option<&Arc<Mutex<Heatmap>>>,
     lineage: Option<&Arc<Mutex<Lineage>>>,
+    lateral: Option<&Arc<Mutex<LateralLinkage>>>,
     diff_summary: Option<&Arc<Mutex<DiffSummary>>>,
     suppression_audit: Option<&Arc<Mutex<SuppressionAuditTracker>>>,
     suppression_rules: Option<&[SuppressionRule]>,
@@ -315,6 +316,12 @@ pub fn run_analysis(
         }
     }
 
+    if let Some(linkage) = lateral {
+        if let Ok(mut guard) = linkage.lock() {
+            guard.update(source_label, &records);
+        }
+    }
+
     if diff_map.is_some() {
         if let Some(summary) = diff_summary {
             if let Ok(mut guard) = summary.lock() {
@@ -332,6 +339,7 @@ pub fn run_recursive_scan(
     output_mode: &OutputMode,
     heatmap: Option<&Arc<Mutex<Heatmap>>>,
     lineage: Option<&Arc<Mutex<Lineage>>>,
+    lateral: Option<&Arc<Mutex<LateralLinkage>>>,
     diff_summary: Option<&Arc<Mutex<DiffSummary>>>,
     suppression_audit: Option<&Arc<Mutex<SuppressionAuditTracker>>>,
     suppression_rules: Option<&[SuppressionRule]>,
@@ -392,6 +400,7 @@ pub fn run_recursive_scan(
                                     Some(&path.to_string_lossy()),
                                     heatmap,
                                     lineage,
+                                    lateral,
                                     diff_summary,
                                     suppression_audit,
                                     suppression_rules,
@@ -545,6 +554,16 @@ pub struct SuppressionAuditTracker {
     kinds: Vec<HashSet<String>>,
     signatures: Vec<HashSet<String>>,
     sources: Vec<HashSet<String>>,
+}
+
+#[derive(Default)]
+pub struct LateralLinkage {
+    fingerprints: HashMap<String, Vec<LateralEvent>>,
+}
+
+#[derive(Clone)]
+struct LateralEvent {
+    source: String,
 }
 
 #[derive(Clone)]
@@ -1380,6 +1399,72 @@ impl Lineage {
 
         Some(out)
     }
+}
+
+impl LateralLinkage {
+    pub fn update(&mut self, source: &str, recs: &[MatchRecord]) {
+        for rec in recs {
+            if rec.kind != "entropy" && rec.kind != "keyword" {
+                continue;
+            }
+            let Some(fp) = fingerprint_token(&rec.matched) else {
+                continue;
+            };
+            let entry = self.fingerprints.entry(fp).or_default();
+            entry.push(LateralEvent {
+                source: source.to_string(),
+            });
+        }
+    }
+
+    pub fn render(&self) -> Option<String> {
+        if self.fingerprints.is_empty() {
+            return None;
+        }
+        let mut entries: Vec<(&String, &Vec<LateralEvent>)> = self.fingerprints.iter().collect();
+        entries.retain(|(_, ev)| {
+            let mut sources: HashSet<&str> = HashSet::new();
+            for e in ev.iter() {
+                sources.insert(e.source.as_str());
+            }
+            sources.len() >= 2
+        });
+        if entries.is_empty() {
+            return None;
+        }
+        entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+        let mut out = String::new();
+        use owo_colors::OwoColorize;
+        let _ = writeln!(out, "\n🔗 Lateral Linkage (possible reuse)");
+        let _ = writeln!(out, "{}", "━".repeat(60).dimmed());
+
+        for (idx, (fp, events)) in entries.iter().take(5).enumerate() {
+            let mut sources: HashSet<&str> = HashSet::new();
+            for e in events.iter() {
+                sources.insert(e.source.as_str());
+            }
+            let _ = writeln!(
+                out,
+                "{}. {} — occurrences {} in {} files",
+                idx + 1,
+                fp.bright_yellow(),
+                events.len(),
+                sources.len()
+            );
+        }
+        Some(out)
+    }
+}
+
+fn fingerprint_token(token: &str) -> Option<String> {
+    let trimmed = token.trim();
+    if trimmed.len() < 12 {
+        return None;
+    }
+    let head = &trimmed[..4];
+    let tail = &trimmed[trimmed.len() - 4..];
+    Some(format!("{}…{}:{}", head, tail, trimmed.len()))
 }
 
 #[derive(Default)]

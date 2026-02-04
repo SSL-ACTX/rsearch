@@ -1,6 +1,6 @@
 use argus::cli::Cli;
 use argus::output::{build_output_mode, finalize_output, handle_output};
-use argus::scan::{load_diff_map, load_suppression_rules, run_analysis, run_recursive_scan, DiffSummary, Heatmap, Lineage, SuppressionAuditTracker};
+use argus::scan::{load_diff_map, load_suppression_rules, run_analysis, run_recursive_scan, DiffSummary, Heatmap, LateralLinkage, Lineage, SuppressionAuditTracker};
 use clap::CommandFactory;
 use clap::Parser;
 use log::{error, info, warn};
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 mod tests {
-    use argus::scan::{apply_suppression_rules, build_attack_surface_links, build_protocol_drift_hints, build_shadowing_hints, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, SuppressionAuditTracker, SuppressionRule};
+    use argus::scan::{apply_suppression_rules, build_attack_surface_links, build_protocol_drift_hints, build_shadowing_hints, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, LateralLinkage, SuppressionAuditTracker, SuppressionRule};
     use argus::entropy::adaptive_confidence_entropy;
     use argus::output::MatchRecord;
 
@@ -214,6 +214,37 @@ const B = "https://api.example.com/v1";
         assert!(!drift.is_empty());
         assert!(drift.iter().any(|d| d.base.contains("api.example.com/v1")));
     }
+
+    #[test]
+    fn lateral_linkage_renders_for_shared_fingerprints() {
+        let recs = vec![
+            MatchRecord {
+                source: "a.rs".to_string(),
+                kind: "entropy".to_string(),
+                matched: "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890".to_string(),
+                line: 1,
+                col: 1,
+                entropy: Some(5.1),
+                context: "token".to_string(),
+                identifier: None,
+            },
+            MatchRecord {
+                source: "b.rs".to_string(),
+                kind: "entropy".to_string(),
+                matched: "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890".to_string(),
+                line: 2,
+                col: 1,
+                entropy: Some(5.1),
+                context: "token".to_string(),
+                identifier: None,
+            },
+        ];
+        let mut linkage = LateralLinkage::default();
+        linkage.update("a.rs", &recs[..1]);
+        linkage.update("b.rs", &recs[1..]);
+        let rendered = linkage.render().unwrap_or_default();
+        assert!(rendered.contains("Lateral Linkage"));
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -258,6 +289,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let heatmap = Arc::new(Mutex::new(Heatmap::default()));
     let lineage = Arc::new(Mutex::new(Lineage::default()));
+    let lateral = Arc::new(Mutex::new(LateralLinkage::default()));
     let diff_summary = Arc::new(Mutex::new(DiffSummary::default()));
 
     let diff_map = if cli.diff {
@@ -300,6 +332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Some(input),
                                 Some(&heatmap),
                                 Some(&lineage),
+                                Some(&lateral),
                                 Some(&diff_summary),
                                 suppression_audit.as_ref(),
                                 Some(&suppression_rules),
@@ -319,6 +352,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &output_mode,
                 Some(&heatmap),
                 Some(&lineage),
+                Some(&lateral),
                 Some(&diff_summary),
                 suppression_audit.as_ref(),
                 Some(&suppression_rules),
@@ -334,6 +368,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         if let Ok(guard) = lineage.lock() {
+            if let Some(summary) = guard.render() {
+                println!("{}", summary);
+            }
+        }
+        if let Ok(guard) = lateral.lock() {
             if let Some(summary) = guard.render() {
                 println!("{}", summary);
             }
