@@ -325,6 +325,35 @@ pub fn run_analysis(
         }
     }
 
+    let auth_drift = build_auth_drift_hints(&records, &endpoint_hints);
+    if !auth_drift.is_empty() {
+        if !cli.json {
+            use owo_colors::OwoColorize;
+            let _ = writeln!(file_output, "{}", "🕵️ Auth Drift".bright_cyan().bold());
+            for hint in auth_drift.iter().take(5) {
+                let _ = writeln!(
+                    file_output,
+                    "  • {} — {} [{}]",
+                    hint.endpoint.bright_white(),
+                    hint.reason.dimmed(),
+                    hint.class.bright_magenta()
+                );
+            }
+        }
+        for hint in &auth_drift {
+            records.push(MatchRecord {
+                source: source_label.to_string(),
+                kind: "auth-drift".to_string(),
+                matched: hint.endpoint.clone(),
+                line: hint.line,
+                col: 0,
+                entropy: None,
+                context: hint.reason.clone(),
+                identifier: None,
+            });
+        }
+    }
+
     let suppression_hints = build_suppression_hints(&records);
     if !suppression_hints.is_empty() {
         if !cli.json {
@@ -633,6 +662,13 @@ pub struct ResponseClassHint {
     pub line: usize,
 }
 
+pub struct AuthDriftHint {
+    pub endpoint: String,
+    pub class: &'static str,
+    pub line: usize,
+    pub reason: String,
+}
+
 pub struct SuppressionHint {
     pub rule: String,
     pub reason: String,
@@ -921,6 +957,52 @@ pub fn build_response_class_hints(
             class: link.class,
             response: response.unwrap(),
             line: rec.line,
+        });
+    }
+
+    out
+}
+
+pub fn build_auth_drift_hints(
+    records: &[MatchRecord],
+    hints: &[EndpointHint],
+) -> Vec<AuthDriftHint> {
+    let mut out = Vec::new();
+    if records.is_empty() || hints.is_empty() {
+        return out;
+    }
+
+    let auth_records: Vec<&MatchRecord> = records
+        .iter()
+        .filter(|r| r.kind == "request-trace" && has_auth_context(&r.context))
+        .collect();
+    if auth_records.is_empty() {
+        return out;
+    }
+
+    for rec in records.iter().filter(|r| r.kind == "request-trace") {
+        if has_auth_context(&rec.context) {
+            continue;
+        }
+        let nearest = auth_records
+            .iter()
+            .map(|r| r.line)
+            .min_by_key(|line| if *line > rec.line { *line - rec.line } else { rec.line - *line });
+        let Some(nearest_line) = nearest else {
+            continue;
+        };
+        let distance = if nearest_line > rec.line { nearest_line - rec.line } else { rec.line - nearest_line };
+        if distance > 40 {
+            continue;
+        }
+        let Some(link) = find_best_link(rec, hints) else {
+            continue;
+        };
+        out.push(AuthDriftHint {
+            endpoint: link.endpoint,
+            class: link.class,
+            line: rec.line,
+            reason: format!("auth missing near L{}", nearest_line),
         });
     }
 

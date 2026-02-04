@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 mod tests {
-    use argus::scan::{apply_suppression_rules, build_api_capability_hints, build_attack_surface_links, build_comment_escalation_hints, build_protocol_drift_hints, build_response_class_hints, build_shadowing_hints, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, LateralLinkage, SuppressionAuditTracker, SuppressionRule};
+    use argus::scan::{apply_suppression_rules, build_api_capability_hints, build_attack_surface_links, build_auth_drift_hints, build_comment_escalation_hints, build_protocol_drift_hints, build_response_class_hints, build_shadowing_hints, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, LateralLinkage, SuppressionAuditTracker, SuppressionRule};
     use argus::entropy::adaptive_confidence_entropy;
     use argus::output::MatchRecord;
 
@@ -320,6 +320,38 @@ const API = "https://api.example.com/login";
         }];
         let hints = build_response_class_hints(&records, &hints);
         assert!(hints.iter().any(|h| h.response == "sensitive"));
+    }
+
+    #[test]
+    fn auth_drift_detects_missing_auth_nearby() {
+        let src = br#"
+const API = "https://api.example.com/v1";
+"#;
+        let hints = extract_attack_surface_hints(src);
+        let records = vec![
+            MatchRecord {
+                source: "test.js".to_string(),
+                kind: "request-trace".to_string(),
+                matched: "fetch".to_string(),
+                line: 10,
+                col: 1,
+                entropy: None,
+                context: "fetch(API, { headers: { Authorization: 'Bearer X' } })".to_string(),
+                identifier: None,
+            },
+            MatchRecord {
+                source: "test.js".to_string(),
+                kind: "request-trace".to_string(),
+                matched: "fetch".to_string(),
+                line: 20,
+                col: 1,
+                entropy: None,
+                context: "fetch(API, { method: 'POST' })".to_string(),
+                identifier: None,
+            },
+        ];
+        let drift = build_auth_drift_hints(&records, &hints);
+        assert!(!drift.is_empty());
     }
 }
 
