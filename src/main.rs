@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 mod tests {
-    use argus::scan::{apply_suppression_rules, build_attack_surface_links, build_shadowing_hints, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, SuppressionAuditTracker, SuppressionRule};
+    use argus::scan::{apply_suppression_rules, build_attack_surface_links, build_protocol_drift_hints, build_shadowing_hints, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, SuppressionAuditTracker, SuppressionRule};
     use argus::entropy::adaptive_confidence_entropy;
     use argus::output::MatchRecord;
 
@@ -201,6 +201,18 @@ fetch(`${API_BASE_URL}/api/projects`);
         assert_eq!(hints[0].identifier, "apiToken");
         assert_eq!(hints[0].earlier_line, 5);
         assert_eq!(hints[0].line, 20);
+    }
+
+    #[test]
+    fn protocol_drift_detects_http_https() {
+        let src = br#"
+const A = "http://api.example.com/v1";
+const B = "https://api.example.com/v1";
+"#;
+        let hints = extract_attack_surface_hints(src);
+        let drift = build_protocol_drift_hints(&hints);
+        assert!(!drift.is_empty());
+        assert!(drift.iter().any(|d| d.base.contains("api.example.com/v1")));
     }
 }
 

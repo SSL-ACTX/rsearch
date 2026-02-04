@@ -199,6 +199,41 @@ pub fn run_analysis(
         }
     }
 
+    let drift_hints = build_protocol_drift_hints(&endpoint_hints);
+    if !drift_hints.is_empty() {
+        if !cli.json {
+            use owo_colors::OwoColorize;
+            let _ = writeln!(file_output, "{}", "🧭 Protocol Drift".bright_cyan().bold());
+            for hint in drift_hints.iter().take(5) {
+                let scheme_str = hint.schemes.join(" ↔ ");
+                let class_str = hint.classes.join("/");
+                let _ = writeln!(
+                    file_output,
+                    "  • {} — {} [{}]",
+                    hint.base.bright_white(),
+                    scheme_str.bright_magenta(),
+                    class_str.bright_magenta()
+                );
+            }
+        }
+        for hint in &drift_hints {
+            records.push(MatchRecord {
+                source: source_label.to_string(),
+                kind: "protocol-drift".to_string(),
+                matched: hint.base.clone(),
+                line: 0,
+                col: 0,
+                entropy: None,
+                context: format!(
+                    "protocol drift: {} [{}]",
+                    hint.schemes.join("->"),
+                    hint.classes.join("/")
+                ),
+                identifier: None,
+            });
+        }
+    }
+
     let suppression_hints = build_suppression_hints(&records);
     if !suppression_hints.is_empty() {
         if !cli.json {
@@ -471,6 +506,12 @@ pub struct AttackSurfaceLink {
     pub class: &'static str,
 }
 
+pub struct ProtocolDriftHint {
+    pub base: String,
+    pub schemes: Vec<String>,
+    pub classes: Vec<&'static str>,
+}
+
 pub struct SuppressionHint {
     pub rule: String,
     pub reason: String,
@@ -630,6 +671,54 @@ pub fn build_suppression_hints(records: &[MatchRecord]) -> Vec<SuppressionHint> 
         }
     }
     deduped
+}
+
+pub fn build_protocol_drift_hints(hints: &[EndpointHint]) -> Vec<ProtocolDriftHint> {
+    let mut map: HashMap<String, (HashSet<String>, HashSet<&'static str>)> = HashMap::new();
+    for hint in hints {
+        if let Some((scheme, rest)) = split_scheme(&hint.url) {
+            if scheme != "http" && scheme != "https" {
+                continue;
+            }
+            let key = normalize_url_key(rest);
+            let entry = map.entry(key).or_insert_with(|| (HashSet::new(), HashSet::new()));
+            entry.0.insert(scheme.to_string());
+            entry.1.insert(hint.class);
+        }
+    }
+
+    let mut out = Vec::new();
+    for (base, (schemes, classes)) in map {
+        if schemes.len() < 2 && classes.len() < 2 {
+            continue;
+        }
+        let mut schemes_vec: Vec<String> = schemes.into_iter().collect();
+        schemes_vec.sort();
+        let mut classes_vec: Vec<&'static str> = classes.into_iter().collect();
+        classes_vec.sort();
+        out.push(ProtocolDriftHint {
+            base,
+            schemes: schemes_vec,
+            classes: classes_vec,
+        });
+    }
+    out
+}
+
+fn split_scheme(url: &str) -> Option<(&'static str, &str)> {
+    if let Some(rest) = url.strip_prefix("http://") {
+        return Some(("http", rest));
+    }
+    if let Some(rest) = url.strip_prefix("https://") {
+        return Some(("https", rest));
+    }
+    if let Some(rest) = url.strip_prefix("ws://") {
+        return Some(("ws", rest));
+    }
+    if let Some(rest) = url.strip_prefix("wss://") {
+        return Some(("wss", rest));
+    }
+    None
 }
 
 pub fn build_shadowing_hints(records: &[MatchRecord]) -> Vec<ShadowingHint> {
