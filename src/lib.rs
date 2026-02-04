@@ -8,7 +8,7 @@ pub mod utils;
 
 #[cfg(test)]
 mod tests {
-    use super::entropy::{calculate_entropy, is_harmless_text, is_likely_charset, scan_for_secrets, scan_for_requests, request_trace_lines, sink_provenance_hint};
+    use super::entropy::{calculate_entropy, is_harmless_text, is_likely_charset, scan_for_secrets, scan_for_requests, request_trace_lines, sink_provenance_hint, surface_tension_hint};
     use std::collections::HashSet;
     use super::keyword::process_search;
     use super::heuristics::FlowMode;
@@ -179,5 +179,18 @@ mod tests {
         assert_eq!(sink_provenance_hint(net).as_deref(), Some("network"));
         assert_eq!(sink_provenance_hint(log).as_deref(), Some("log"));
         assert_eq!(sink_provenance_hint(disk).as_deref(), Some("disk"));
+    }
+
+    #[test]
+    fn surface_tension_detects_layered_obfuscation() {
+        let seed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let payload = seed.repeat(6);
+        let combined = format!("{}{}{}", payload, payload, payload);
+        let bytes = combined.as_bytes();
+        let start = 10;
+        let end = 10 + payload.len();
+        let ent = calculate_entropy(&bytes[start..end]);
+        let hint = surface_tension_hint(bytes, start, end, ent, 3.5);
+        assert!(hint.is_some());
     }
 }

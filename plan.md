@@ -14,6 +14,7 @@ Status legend: done | in-progress | planned
 - Token-Sink Provenance: trace secret-like values to their first sink (network, disk, logs). **Status:** done
 - Ambient Credential Shadowing: detect when placeholder values are later replaced by real secrets. **Status:** done
 - Protocol Drift Map: detect HTTP requests that silently migrate between protocols/classes. **Status:** done
+- Entropy “Surface Tension”: detect layered obfuscation by entropy gradients. **Status:** done
 - Risk Heatmap: file-level heat scores, top hotspots, and “top 10 risky files” summary. **Status:** done
 - Token Typing: classify likely token types (JWT, AWS key, GitHub PAT, Stripe, etc.) with non-regex heuristics. **Status:** done
 - Secure Diff Mode: scan only newly added lines in git diffs with a high-signal summary. **Status:** done
@@ -24,7 +25,6 @@ Status legend: done | in-progress | planned
   - Done: link request-trace calls to nearby endpoint hints (context match + line proximity).
 
 ## 🧪 New Concepts (Planned, Unique)
-- **Entropy “Surface Tension”:** compute entropy gradients across neighboring tokens to detect deliberate obfuscation layers (e.g., base64 inside base64). **Status:** planned
 - **Lateral Linkage Graph:** connect findings across repos by shared token fragments or URL fingerprints, generating a “possible reuse” report. **Status:** planned
 - **API Capability Inference:** infer capability level by combining endpoints + verbs + auth context (read-only, destructive, privileged). **Status:** planned
 - **Secrets-in-Comments Escalation:** treat secrets embedded in commented code as higher risk when adjacent to live endpoints. **Status:** planned

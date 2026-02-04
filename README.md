@@ -148,7 +148,7 @@ Enrichment:
 
 ## Deep Scan and Flow Scan
 
-`--deep-scan` augments each match with statistics that help triage relevance (frequency in file, nearest neighbor distance, call-site proximity, span/density, and identifier hints). It now adds contextual signals (e.g., header/auth/keyword hints), token typing, a confidence score, sink provenance (network/disk/log), credential shadowing hints, protocol drift hints, and an entropy cluster summary to make the “story” more actionable. When flow is available, it also prints a compact **Context Graph** tree (owner/scope/path/call/control hints).
+`--deep-scan` augments each match with statistics that help triage relevance (frequency in file, nearest neighbor distance, call-site proximity, span/density, and identifier hints). It now adds contextual signals (e.g., header/auth/keyword hints), token typing, a confidence score, sink provenance (network/disk/log), credential shadowing hints, protocol drift hints, surface-tension hints, and an entropy cluster summary to make the “story” more actionable. When flow is available, it also prints a compact **Context Graph** tree (owner/scope/path/call/control hints).
 
 When running in human output mode, argus also prints a **Risk Heatmap** summary at the end of the scan (top files by weighted score) and a **Secret Lineage** summary that highlights repeated tokens across files (origin → propagation). Attack surface hints now classify endpoints (public/localhost/internal/relative) and link request-trace calls to nearby endpoints.
 

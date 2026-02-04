@@ -251,6 +251,11 @@ pub fn scan_for_secrets(
                             .as_deref()
                             .map(|s| format!("; sink {}", s))
                             .unwrap_or_default();
+                        let tension = surface_tension_hint(bytes, start, i, score, threshold);
+                        let tension_str = tension
+                            .as_deref()
+                            .map(|t| format!("; tension {}", t))
+                            .unwrap_or_default();
                         let signals_str = if signals.is_empty() {
                             "signals n/a".to_string()
                         } else {
@@ -258,7 +263,7 @@ pub fn scan_for_secrets(
                         };
                         let _ = writeln!(
                             out,
-                            "{} appears {} times; nearest repeat {} bytes away; len {}; {}; {}; mix a{}% d{}% s{}%; {}; conf {}/10{}{}",
+                            "{} appears {} times; nearest repeat {} bytes away; len {}; {}; {}; mix a{}% d{}% s{}%; {}; conf {}/10{}{}{}",
                             "Story:".bright_green().bold(),
                             count.to_string().bright_yellow(),
                             nearest
@@ -274,6 +279,7 @@ pub fn scan_for_secrets(
                             signals_str.bright_blue(),
                             confidence.to_string().bright_red(),
                             sink_str,
+                            tension_str,
                             id_hint
                         );
                         let owner = preferred_owner_identifier(identifier.as_deref(), &raw_context, &snippet_str);
@@ -1193,6 +1199,46 @@ pub(crate) fn sink_provenance_hint(raw: &str) -> Option<String> {
         return Some("log".to_string());
     }
 
+    None
+}
+
+pub(crate) fn surface_tension_hint(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    candidate_entropy: f64,
+    threshold: f64,
+) -> Option<String> {
+    let window = 48usize;
+    let min_len = 16usize;
+    let left_start = start.saturating_sub(window);
+    let left = &bytes[left_start..start];
+    let right_end = (end + window).min(bytes.len());
+    let right = &bytes[end..right_end];
+
+    let mut neighbor_scores = Vec::new();
+    if left.len() >= min_len {
+        neighbor_scores.push(calculate_entropy(left));
+    }
+    if right.len() >= min_len {
+        neighbor_scores.push(calculate_entropy(right));
+    }
+    if neighbor_scores.is_empty() {
+        return None;
+    }
+
+    let avg = neighbor_scores.iter().sum::<f64>() / neighbor_scores.len() as f64;
+    let delta = (candidate_entropy - avg).abs();
+
+    let high_neighbor = avg >= (threshold - 0.4).max(3.5);
+    let low_neighbor = avg <= (threshold - 1.2).max(2.5);
+
+    if high_neighbor && delta <= 0.6 {
+        return Some("layered-obfuscation".to_string());
+    }
+    if low_neighbor && candidate_entropy >= threshold + 0.6 {
+        return Some("isolated-secret".to_string());
+    }
     None
 }
 
