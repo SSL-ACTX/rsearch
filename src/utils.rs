@@ -87,9 +87,9 @@ fn format_prettified_highlight(raw: &str, source_hint: Option<&str>) -> String {
         let prefix = "  ".repeat(indentation + 1);
         if let Ok(ranges) = highlighter.highlight_line(trimmed, syntax_set) {
             let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
-            let _ = writeln!(out, "{}{}", prefix, escaped);
+            let _ = writeln!(out, "{}{}\x1b[0m", prefix, escaped);
         } else {
-            let _ = writeln!(out, "{}{}", prefix, trimmed);
+            let _ = writeln!(out, "{}{}\x1b[0m", prefix, trimmed);
         }
 
         if raw.contains('{') {
@@ -100,6 +100,7 @@ fn format_prettified_highlight(raw: &str, source_hint: Option<&str>) -> String {
         }
     }
 
+    out.push_str("\x1b[0m");
     out
 }
 

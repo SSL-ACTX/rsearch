@@ -155,7 +155,8 @@ pub fn process_search(
                     &id_hint,
                     label,
                 );
-                let _ = writeln!(out, "{}", story_md);
+                let _ = writeln!(out);
+                let _ = writeln!(out, "{}", style_story_text(&story_md));
             }
             if let Some(flow) = flow.as_ref() {
                 if let Some(lines) = format_context_graph(flow, identifier.as_deref()) {
@@ -170,7 +171,7 @@ pub fn process_search(
 
         if let Some(flow) = flow.as_ref() {
             if let Some(line) = format_flow_compact(flow) {
-                let _ = writeln!(out, "{} {}", "Flow:".bright_magenta().bold(), line.bright_cyan());
+                let _ = writeln!(out, "{} {}", "Flow:".bright_cyan().bold(), style_flow_line(&line));
             }
         }
 
@@ -318,6 +319,105 @@ fn style_context_line(line: &str) -> String {
         }
     }
     line.bright_white().to_string()
+}
+
+fn style_story_text(raw: &str) -> String {
+    use owo_colors::OwoColorize;
+    let mut out = String::new();
+    for (idx, line) in raw.lines().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        if let Some(rest) = line.strip_prefix("Story:") {
+            let styled = format!("{}{}", "Story:".bright_cyan().bold(), style_story_body(rest));
+            out.push_str(&styled);
+        } else if let Some(rest) = line.strip_prefix("Source:") {
+            let styled = format!("{}{}", "Source:".bright_cyan().bold(), rest.bright_white());
+            out.push_str(&styled);
+        } else {
+            out.push_str(&line.bright_white().to_string());
+        }
+    }
+    out
+}
+
+fn style_story_body(raw: &str) -> String {
+    use owo_colors::OwoColorize;
+    let mut out = String::new();
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.peek().cloned() {
+        if ch.is_ascii_digit() || (ch == '~' && chars.clone().nth(1).map(|n| n.is_ascii_digit()).unwrap_or(false)) {
+            let mut buf = String::new();
+            if ch == '~' {
+                buf.push(ch);
+                chars.next();
+            }
+            while let Some(c) = chars.peek().cloned() {
+                if c.is_ascii_digit() || c == '/' || c == '.' {
+                    buf.push(c);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            out.push_str(&buf.bright_yellow().to_string());
+            continue;
+        }
+        let c = chars.next().unwrap();
+        out.push(c);
+    }
+    out.bright_white().to_string()
+}
+
+fn style_flow_line(line: &str) -> String {
+    use owo_colors::OwoColorize;
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('[') {
+        if start > 0 {
+            out.push_str(&(&rest[..start]).bright_white().to_string());
+        }
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find(']') {
+            let inner = &after[..end];
+            out.push_str(&"[".dimmed().to_string());
+            out.push_str(&style_flow_segment(inner));
+            out.push_str(&"]".dimmed().to_string());
+            rest = &after[end + 1..];
+        } else {
+            out.push_str(&(&rest[start..]).bright_white().to_string());
+            rest = "";
+            break;
+        }
+    }
+    if !rest.is_empty() {
+        out.push_str(&(&rest).bright_white().to_string());
+    }
+    out
+}
+
+fn style_flow_segment(seg: &str) -> String {
+    use owo_colors::OwoColorize;
+    let mut out = String::new();
+    for (i, token) in seg.split_whitespace().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let lower = token.to_lowercase();
+        let is_key = matches!(
+            lower.as_str(),
+            "scope" | "path" | "container" | "ctrl" | "assign" | "return" | "chain" | "depth"
+        );
+        let has_digit = token.chars().any(|c| c.is_ascii_digit());
+        if is_key {
+            out.push_str(&token.bright_cyan().to_string());
+        } else if has_digit {
+            out.push_str(&token.bright_yellow().to_string());
+        } else {
+            out.push_str(&token.bright_white().to_string());
+        }
+    }
+    out
 }
 
 fn keyword_context_signals(raw: &str, identifier: Option<&str>, keyword: &str, source_label: &str) -> (Vec<&'static str>, u8) {

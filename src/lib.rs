@@ -6,6 +6,7 @@ pub mod output;
 pub mod scan;
 pub mod utils;
 pub mod story;
+pub mod grammar;
 
 #[cfg(test)]
 mod tests {
@@ -64,7 +65,7 @@ mod tests {
         let keywords = vec!["encrypt".to_string()];
         let (out, _records) = process_search(data, "test.rs", &keywords, 10, true, FlowMode::Heuristic, None);
         assert!(out.contains("Story:"));
-        assert!(out.contains("call-sites"));
+        assert!(out.contains("Source:"));
         assert!(out.contains("Flow:"));
         assert!(out.contains("scope "));
     }

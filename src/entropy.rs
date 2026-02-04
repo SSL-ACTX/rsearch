@@ -269,7 +269,7 @@ pub fn scan_for_secrets(
                         let _ = writeln!(
                             out,
                             "{} appears {} times; nearest repeat {} bytes away; len {}; {}; {}; mix a{}% d{}% s{}%; {}; conf {}/10{}{}{}{}",
-                            "Story:".bright_green().bold(),
+                            "Story:".bright_cyan().bold(),
                             count.to_string().bright_yellow(),
                             nearest
                                 .map(|d| d.to_string())
@@ -309,11 +309,11 @@ pub fn scan_for_secrets(
                         }
                     }
 
-                    if let Some(flow) = flow.as_ref() {
-                        if let Some(line) = format_flow_compact(flow) {
-                            let _ = writeln!(out, "{} {}", "Flow:".bright_magenta().bold(), line.bright_cyan());
+                        if let Some(flow) = flow.as_ref() {
+                            if let Some(line) = format_flow_compact(flow) {
+                                let _ = writeln!(out, "{} {}", "Flow:".bright_cyan().bold(), style_flow_line(&line));
+                            }
                         }
-                    }
 
                     let _ = writeln!(out, "{}", "─".repeat(40).dimmed());
 
@@ -514,7 +514,7 @@ pub fn scan_for_requests(
 
             if let Some(flow) = flow.as_ref() {
                 if let Some(line) = format_flow_compact(flow) {
-                    let _ = writeln!(out, "{} {}", "Flow:".bright_magenta().bold(), line.bright_cyan());
+                    let _ = writeln!(out, "{} {}", "Flow:".bright_cyan().bold(), style_flow_line(&line));
                 }
             }
 
@@ -2150,6 +2150,57 @@ fn style_context_line(line: &str) -> String {
         }
     }
     line.bright_white().to_string()
+}
+
+fn style_flow_line(line: &str) -> String {
+    use owo_colors::OwoColorize;
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('[') {
+        if start > 0 {
+            out.push_str(&(&rest[..start]).bright_white().to_string());
+        }
+        let after = &rest[start + 1..];
+        if let Some(end) = after.find(']') {
+            let inner = &after[..end];
+            out.push_str(&"[".dimmed().to_string());
+            out.push_str(&style_flow_segment(inner));
+            out.push_str(&"]".dimmed().to_string());
+            rest = &after[end + 1..];
+        } else {
+            out.push_str(&(&rest[start..]).bright_white().to_string());
+            rest = "";
+            break;
+        }
+    }
+    if !rest.is_empty() {
+        out.push_str(&(&rest).bright_white().to_string());
+    }
+    out
+}
+
+fn style_flow_segment(seg: &str) -> String {
+    use owo_colors::OwoColorize;
+    let mut out = String::new();
+    for (i, token) in seg.split_whitespace().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let lower = token.to_lowercase();
+        let is_key = matches!(
+            lower.as_str(),
+            "scope" | "path" | "container" | "ctrl" | "assign" | "return" | "chain" | "depth"
+        );
+        let has_digit = token.chars().any(|c| c.is_ascii_digit());
+        if is_key {
+            out.push_str(&token.bright_cyan().to_string());
+        } else if has_digit {
+            out.push_str(&token.bright_yellow().to_string());
+        } else {
+            out.push_str(&token.bright_white().to_string());
+        }
+    }
+    out
 }
 
 fn find_assignment_lhs(context: &str) -> Option<String> {
