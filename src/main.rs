@@ -131,6 +131,19 @@ fetch(`${API_BASE_URL}/api/projects`);
     }
 
     #[test]
+    fn adaptive_confidence_flags_infra_paths() {
+        let raw = "const token = \"ABCD1234EFGH5678\";";
+        let (signals, _confidence) = adaptive_confidence_entropy(
+            raw,
+            Some("apiToken"),
+            "ABCD1234EFGH5678",
+            5.1,
+            "infra/k8s/secrets.yaml",
+        );
+        assert!(signals.iter().any(|s| *s == "infra-context"));
+    }
+
+    #[test]
     fn suppression_audit_flags_stale_and_broad_rules() {
         let rules = vec![
             SuppressionRule::Id("nope".to_string()),

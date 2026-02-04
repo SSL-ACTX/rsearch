@@ -19,6 +19,7 @@ Status legend: done | in-progress | planned
 - Secrets-in-Comments Escalation: raise risk for commented secrets near public endpoints. **Status:** done
 - Obfuscation Signature Index: detect packers/minifiers and annotate request tracing. **Status:** done
 - Response Class Guessing: infer sensitive response class from request parameters. **Status:** done
+- Path-Depth Shock: elevate risk when secrets appear in infrastructure paths. **Status:** done
 - Lateral Linkage Graph: connect findings across files by shared fingerprints. **Status:** done
 - Risk Heatmap: file-level heat scores, top hotspots, and “top 10 risky files” summary. **Status:** done
 - Token Typing: classify likely token types (JWT, AWS key, GitHub PAT, Stripe, etc.) with non-regex heuristics. **Status:** done
@@ -30,7 +31,6 @@ Status legend: done | in-progress | planned
   - Done: link request-trace calls to nearby endpoint hints (context match + line proximity).
 
 ## 🧪 New Concepts (Planned, Unique)
-- **Path-Depth Shock:** elevate risk when a secret appears close to deployment paths (e.g., `infra/`, `k8s/`, `terraform/`). **Status:** planned
 - **Contextual Auth Drift:** detect when a request loses auth headers within a call chain compared to nearby calls. **Status:** planned
 - **Endpoint Shape Morphing:** detect templated endpoints that resolve to public domains at runtime through base URL overrides. **Status:** planned
 - **Leak Velocity Score:** estimate how quickly a secret could leak based on proximity to logging, telemetry, or error paths. **Status:** planned

@@ -342,6 +342,12 @@ fn keyword_context_signals(raw: &str, identifier: Option<&str>, keyword: &str, s
         score -= 1;
     }
 
+    let infra_words = ["/infra", "/k8s", "/kubernetes", "/terraform", "/helm", "/deploy", "/ops", "/ansible"]; 
+    if infra_words.iter().any(|w| source.contains(w)) {
+        signals.push("infra-context");
+        score += 2;
+    }
+
     let confidence = score.clamp(1, 10) as u8;
     (signals, confidence)
 }

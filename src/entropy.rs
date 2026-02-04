@@ -819,6 +819,12 @@ pub fn adaptive_confidence_entropy(
         signals.push("doc-context");
         score -= 2;
     }
+
+    let infra_words = ["/infra", "/k8s", "/kubernetes", "/terraform", "/helm", "/deploy", "/ops", "/ansible"]; 
+    if infra_words.iter().any(|w| source.contains(w)) {
+        signals.push("infra-context");
+        score += 2;
+    }
     if lower.contains("localhost") || lower.contains("127.0.0.1") {
         signals.push("dev-context");
         score -= 1;
