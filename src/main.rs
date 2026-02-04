@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 mod tests {
-    use argus::scan::{apply_suppression_rules, build_api_capability_hints, build_attack_surface_links, build_auth_drift_hints, build_comment_escalation_hints, build_protocol_drift_hints, build_response_class_hints, build_shadowing_hints, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, LateralLinkage, SuppressionAuditTracker, SuppressionRule};
+    use argus::scan::{apply_suppression_rules, build_api_capability_hints, build_attack_surface_links, build_auth_drift_hints, build_comment_escalation_hints, build_endpoint_shape_morphing_hints, build_protocol_drift_hints, build_response_class_hints, build_shadowing_hints, build_suppression_hints, classify_endpoint, extract_attack_surface_hints, DiffSummary, LateralLinkage, SuppressionAuditTracker, SuppressionRule};
     use argus::entropy::adaptive_confidence_entropy;
     use argus::output::MatchRecord;
 
@@ -352,6 +352,18 @@ const API = "https://api.example.com/v1";
         ];
         let drift = build_auth_drift_hints(&records, &hints);
         assert!(!drift.is_empty());
+    }
+
+    #[test]
+    fn endpoint_morphing_detects_template_with_multiple_bases() {
+        let src = br#"
+const API_BASE_URL = "http://localhost:5000";
+const PROD_BASE_URL = "https://api.example.com";
+fetch(`${API_BASE_URL}/v1/users`);
+"#;
+        let hints = extract_attack_surface_hints(src);
+        let morph = build_endpoint_shape_morphing_hints(&hints);
+        assert!(!morph.is_empty());
     }
 }
 

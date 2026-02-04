@@ -354,6 +354,35 @@ pub fn run_analysis(
         }
     }
 
+    let morph_hints = build_endpoint_shape_morphing_hints(&endpoint_hints);
+    if !morph_hints.is_empty() {
+        if !cli.json {
+            use owo_colors::OwoColorize;
+            let _ = writeln!(file_output, "{}", "🧬 Endpoint Morphing".bright_cyan().bold());
+            for hint in morph_hints.iter().take(5) {
+                let classes = hint.classes.join("/");
+                let _ = writeln!(
+                    file_output,
+                    "  • {} — classes {}",
+                    hint.endpoint.bright_white(),
+                    classes.bright_magenta()
+                );
+            }
+        }
+        for hint in &morph_hints {
+            records.push(MatchRecord {
+                source: source_label.to_string(),
+                kind: "endpoint-morphing".to_string(),
+                matched: hint.endpoint.clone(),
+                line: hint.line,
+                col: 0,
+                entropy: None,
+                context: format!("morph classes {}", hint.classes.join("/")),
+                identifier: None,
+            });
+        }
+    }
+
     let suppression_hints = build_suppression_hints(&records);
     if !suppression_hints.is_empty() {
         if !cli.json {
@@ -667,6 +696,12 @@ pub struct AuthDriftHint {
     pub class: &'static str,
     pub line: usize,
     pub reason: String,
+}
+
+pub struct EndpointMorphHint {
+    pub endpoint: String,
+    pub classes: Vec<&'static str>,
+    pub line: usize,
 }
 
 pub struct SuppressionHint {
@@ -1006,6 +1041,43 @@ pub fn build_auth_drift_hints(
         });
     }
 
+    out
+}
+
+pub fn build_endpoint_shape_morphing_hints(hints: &[EndpointHint]) -> Vec<EndpointMorphHint> {
+    let base_map = build_base_url_map(hints);
+    if base_map.len() < 2 {
+        return Vec::new();
+    }
+    let mut classes: HashSet<&'static str> = HashSet::new();
+    for (class, _) in base_map.values() {
+        classes.insert(*class);
+    }
+    if classes.len() < 2 {
+        return Vec::new();
+    }
+
+    let class_vec = {
+        let mut v: Vec<&'static str> = classes.into_iter().collect();
+        v.sort();
+        v
+    };
+
+    let mut out = Vec::new();
+    for hint in hints {
+        if !hint.url.contains("${") {
+            continue;
+        }
+        let uses_base = base_map.keys().any(|k| hint.url.contains(k));
+        if !uses_base {
+            continue;
+        }
+        out.push(EndpointMorphHint {
+            endpoint: hint.url.clone(),
+            classes: class_vec.clone(),
+            line: hint.line,
+        });
+    }
     out
 }
 
