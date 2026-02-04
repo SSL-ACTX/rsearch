@@ -3,9 +3,10 @@ use memchr;
 use memchr::memmem;
 use std::fmt::Write as FmtWrite;
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::output::MatchRecord;
-use crate::heuristics::{analyze_flow_context_with_mode, format_context_graph, format_flow_compact, FlowMode};
+use crate::heuristics::{analyze_flow_context_with_mode, format_context_graph, format_flow_compact, is_likely_code, is_likely_code_for_path, FlowMode};
 use crate::entropy::{leak_velocity_hint, request_trace_lines, sink_provenance_hint};
 use crate::story::render_story_markdown;
 use crate::utils::{find_preceding_identifier, format_prettified_with_hint, LineFilter};
@@ -27,6 +28,12 @@ pub fn process_search(
     if keywords.is_empty() {
         return (out, records);
     }
+
+    let likely_code = if label.starts_with("http") {
+        is_likely_code(bytes)
+    } else {
+        is_likely_code_for_path(Path::new(label), bytes)
+    };
 
     // Construct Aho-Corasick automaton for keyword matching.
     let ac = match AhoCorasick::new(keywords) {
@@ -73,15 +80,13 @@ pub fn process_search(
         }
 
         let identifier = find_preceding_identifier(bytes, pos);
-        if is_doc_like_path(label) {
-            let (signals, _confidence) =
-                keyword_context_signals(&raw_snippet, identifier.as_deref(), matched_word, label);
-            let allow = signals.iter().any(|s| {
-                *s == "high-risk-keyword" || *s == "keyword-hint" || *s == "id-hint"
-            });
-            if !allow {
-                continue;
-            }
+        let (signals, confidence) =
+            keyword_context_signals(&raw_snippet, identifier.as_deref(), matched_word, label);
+        let allow = signals.iter().any(|s| {
+            *s == "high-risk-keyword" || *s == "keyword-hint" || *s == "id-hint"
+        });
+        if (is_doc_like_path(label) || !likely_code) && !allow {
+            continue;
         }
 
         let _ = writeln!(
@@ -113,7 +118,6 @@ pub fn process_search(
                     .as_deref()
                     .map(|id| format!("; id {}", id))
                     .unwrap_or_default();
-                let (signals, confidence) = keyword_context_signals(&raw_snippet, identifier.as_deref(), matched_word, label);
                 let secretish = signals.iter().any(|s| {
                     *s == "keyword-hint" || *s == "high-risk-keyword" || *s == "id-hint"
                 });
