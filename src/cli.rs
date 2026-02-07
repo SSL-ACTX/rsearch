@@ -1,4 +1,35 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputPersona {
+    Scan,
+    Debug,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct OutputTuning {
+    pub confidence_floor: u8,
+    pub expand_story: bool,
+    pub debug: bool,
+}
+
+impl OutputTuning {
+    pub fn scan() -> Self {
+        OutputTuning {
+            confidence_floor: 4,
+            expand_story: false,
+            debug: false,
+        }
+    }
+
+    pub fn debug() -> Self {
+        OutputTuning {
+            confidence_floor: 0,
+            expand_story: true,
+            debug: true,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(author = "Seuriin", version, about = "A high-performance, entropy-based secret scanner.", long_about = None)]
@@ -75,6 +106,26 @@ pub struct Cli {
     #[arg(long)]
     pub suppression_audit: bool,
 
+    /// Output persona: scan (quiet/CI-safe) or debug (loud)
+    #[arg(long, value_enum, default_value_t = OutputPersona::Scan)]
+    pub mode: OutputPersona,
+
+    /// Quiet mode (alias for --mode scan)
+    #[arg(long, conflicts_with = "loud")]
+    pub quiet: bool,
+
+    /// Loud mode (alias for --mode debug)
+    #[arg(long, conflicts_with = "quiet")]
+    pub loud: bool,
+
+    /// Drop findings below this confidence (0-10). Overrides mode defaults.
+    #[arg(long, default_value_t = 0)]
+    pub confidence_floor: u8,
+
+    /// Expand repeated story blocks (otherwise collapse similar occurrences)
+    #[arg(long)]
+    pub expand: bool,
+
     /// Scan only added lines in git diff
     #[arg(long)]
     pub diff: bool,
@@ -82,4 +133,34 @@ pub struct Cli {
     /// Git diff base (e.g., HEAD, main, origin/main)
     #[arg(long, default_value_t = String::from("HEAD"))]
     pub diff_base: String,
+}
+
+impl Cli {
+    pub fn output_tuning(&self) -> OutputTuning {
+        let mut mode = self.mode;
+        if self.loud {
+            mode = OutputPersona::Debug;
+        }
+        if self.quiet {
+            mode = OutputPersona::Scan;
+        }
+
+        let base_floor = match mode {
+            OutputPersona::Scan => 4,
+            OutputPersona::Debug => 0,
+        };
+        let confidence_floor = if self.confidence_floor > 0 {
+            self.confidence_floor
+        } else {
+            base_floor
+        };
+        let debug = matches!(mode, OutputPersona::Debug);
+        let expand_story = self.expand || debug;
+
+        OutputTuning {
+            confidence_floor,
+            expand_story,
+            debug,
+        }
+    }
 }

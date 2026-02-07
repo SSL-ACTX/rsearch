@@ -5,11 +5,12 @@ use std::fmt::Write as FmtWrite;
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::cli::OutputTuning;
 use crate::output::MatchRecord;
 use crate::heuristics::{analyze_flow_context_with_mode, format_context_graph, format_flow_compact, is_likely_code, is_likely_code_for_path, FlowMode};
 use crate::entropy::{leak_velocity_hint, request_trace_lines, sink_provenance_hint};
 use crate::story::render_story_markdown;
-use crate::utils::{find_preceding_identifier, format_prettified_with_hint, LineFilter};
+use crate::utils::{confidence_tier, find_preceding_identifier, format_prettified_with_hint, LineFilter};
 
 pub fn process_search(
     bytes: &[u8],
@@ -19,6 +20,7 @@ pub fn process_search(
     deep_scan: bool,
     flow_mode: FlowMode,
     line_filter: Option<&LineFilter>,
+    tuning: &OutputTuning,
 ) -> (String, Vec<MatchRecord>) {
     use owo_colors::OwoColorize;
 
@@ -53,6 +55,9 @@ pub fn process_search(
         HashMap::new()
     };
 
+    let mut story_emitted: HashMap<String, bool> = HashMap::new();
+    let mut collapse_emitted: HashMap<String, bool> = HashMap::new();
+
     if matches.is_empty() {
         return (out, records);
     }
@@ -80,12 +85,29 @@ pub fn process_search(
         }
 
         let identifier = find_preceding_identifier(bytes, pos);
-        let (signals, confidence) =
+        let flow = if flow_mode != FlowMode::Off {
+            analyze_flow_context_with_mode(bytes, pos, flow_mode)
+        } else {
+            None
+        };
+        let (mut signals, mut score) =
             keyword_context_signals(&raw_snippet, identifier.as_deref(), matched_word, label);
+        apply_keyword_adjustments(
+            &mut signals,
+            &mut score,
+            matched_word,
+            &raw_snippet,
+            flow.as_ref(),
+            word_stats.get(matched_word),
+        );
+        let confidence = score.clamp(0, 10) as u8;
+        if confidence < tuning.confidence_floor {
+            continue;
+        }
         let allow = signals.iter().any(|s| {
-            *s == "high-risk-keyword" || *s == "keyword-hint" || *s == "id-hint"
+            s == "high-risk-keyword" || s == "keyword-hint" || s == "id-hint" || s == "auth-header"
         });
-        if (is_doc_like_path(label) || !likely_code) && !allow {
+        if !tuning.debug && (is_doc_like_path(label) || !likely_code) && !allow {
             continue;
         }
 
@@ -102,80 +124,115 @@ pub fn process_search(
         let pretty = format_prettified_with_hint(&raw_snippet, matched_word, Some(label));
         let _ = writeln!(out, "{}", pretty);
 
-        let flow = if flow_mode != FlowMode::Off {
-            analyze_flow_context_with_mode(bytes, pos, flow_mode)
-        } else {
-            None
-        };
+        let low_confidence = confidence <= 3;
         if deep_scan {
-            if let Some(stats) = word_stats.get(matched_word) {
-                let occ_index = stats.occurrence_index(pos);
-                let neighbor_dist = stats.nearest_neighbor_distance(pos);
-                let (call_sites, nearest_call) = stats.call_sites_info(bytes, pos);
-                let span = stats.positions.last().zip(stats.positions.first()).map(|(l, f)| l.saturating_sub(*f));
-                let density = (stats.positions.len() * 1024) / bytes.len().max(1);
-                let id_hint = identifier
-                    .as_deref()
-                    .map(|id| format!("; id {}", id))
-                    .unwrap_or_default();
-                let secretish = signals.iter().any(|s| {
-                    *s == "keyword-hint" || *s == "high-risk-keyword" || *s == "id-hint"
-                });
-                let _sink_str = if secretish {
-                    sink_provenance_hint(&raw_snippet)
+            let docish = signals.iter().any(|s| s == "doc-context" || s == "doc-path") || is_doc_like_path(label);
+            let doc_collapse = !tuning.debug && docish && confidence < 7;
+            if (low_confidence || doc_collapse) && !tuning.debug {
+                if !collapse_emitted.contains_key(matched_word) {
+                    let (badge, label) = confidence_tier(confidence);
+                    let reason = if doc_collapse { "doc-context" } else { "low-confidence" };
+                    let _ = writeln!(out, "{} {} confidence ({} /10) — {} collapsed (use --loud or --mode debug)", badge, label, confidence, reason);
+                    collapse_emitted.insert(matched_word.to_string(), true);
+                }
+            } else {
+                let should_emit_story = tuning.expand_story || !story_emitted.contains_key(matched_word);
+                if should_emit_story {
+                    let id_hint = identifier
                         .as_deref()
-                        .map(|s| format!("; sink {}", s))
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                let _velocity_str = if secretish {
-                    leak_velocity_hint(&raw_snippet)
-                        .as_deref()
-                        .map(|v| format!("; velocity {}", v))
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
-                let _signals_str = if signals.is_empty() {
-                    "signals n/a".to_string()
-                } else {
-                    format!("signals {}", signals.join(","))
-                };
+                        .map(|id| format!("; id {}", id))
+                        .unwrap_or_default();
 
-                // Render a human-friendly markdown story instead of the compact robot line.
-                let sigs: Vec<String> = signals.iter().map(|s| s.to_string()).collect();
-                let story_md = render_story_markdown(
-                    matched_word,
-                    stats.positions.len(),
-                    occ_index,
-                    neighbor_dist,
-                    call_sites,
-                    span,
-                    density,
-                    &sigs,
-                    confidence,
-                    nearest_call,
-                    &id_hint,
-                    label,
-                );
-                let _ = writeln!(out);
-                let _ = writeln!(out, "{}", style_story_text(&story_md));
-            }
-            if let Some(flow) = flow.as_ref() {
-                if let Some(lines) = format_context_graph(flow, identifier.as_deref()) {
-                    let _ = writeln!(out, "{}", "Context:".bright_cyan().bold());
-                    for line in lines {
-                        let styled = style_context_line(&line);
-                        let _ = writeln!(out, "{}", styled);
+                    if let Some(stats) = word_stats.get(matched_word) {
+                        let occ_index = stats.occurrence_index(pos);
+                        let neighbor_dist = stats.nearest_neighbor_distance(pos);
+                        let (call_sites, nearest_call) = stats.call_sites_info(bytes, pos);
+                        let span = stats.positions.last().zip(stats.positions.first()).map(|(l, f)| l.saturating_sub(*f));
+                        let density = (stats.positions.len() * 1024) / bytes.len().max(1);
+                        let secretish = signals.iter().any(|s| {
+                            s == "keyword-hint" || s == "high-risk-keyword" || s == "id-hint"
+                        });
+                        let _sink_str = if secretish {
+                            sink_provenance_hint(&raw_snippet)
+                                .as_deref()
+                                .map(|s| format!("; sink {}", s))
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        let _velocity_str = if secretish {
+                            leak_velocity_hint(&raw_snippet)
+                                .as_deref()
+                                .map(|v| format!("; velocity {}", v))
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        let _signals_str = if signals.is_empty() {
+                            "signals n/a".to_string()
+                        } else {
+                            format!("signals {}", signals.join(","))
+                        };
+
+                        // Render a human-friendly markdown story instead of the compact robot line.
+                        let story_md = render_story_markdown(
+                            matched_word,
+                            stats.positions.len(),
+                            occ_index,
+                            neighbor_dist,
+                            call_sites,
+                            span,
+                            density,
+                            &signals,
+                            confidence,
+                            nearest_call,
+                            &id_hint,
+                            label,
+                        );
+                        let _ = writeln!(out);
+                        let _ = writeln!(out, "{}", style_story_text(&story_md));
+                        if !tuning.expand_story && stats.positions.len() > 1 {
+                            let collapsed = stats.positions.len().saturating_sub(1);
+                            let _ = writeln!(out, "+{} similar occurrences (use --expand)", collapsed);
+                        }
+                    } else {
+                        let story_md = render_story_markdown(
+                            matched_word,
+                            1,
+                            0,
+                            None,
+                            0,
+                            None,
+                            0,
+                            &signals,
+                            confidence,
+                            None,
+                            &id_hint,
+                            label,
+                        );
+                        let _ = writeln!(out);
+                        let _ = writeln!(out, "{}", style_story_text(&story_md));
+                    }
+                    story_emitted.insert(matched_word.to_string(), true);
+                }
+
+                if let Some(flow) = flow.as_ref() {
+                    if let Some(lines) = format_context_graph(flow, identifier.as_deref()) {
+                        let _ = writeln!(out, "{}", "Context:".bright_cyan().bold());
+                        for line in lines {
+                            let styled = style_context_line(&line);
+                            let _ = writeln!(out, "{}", styled);
+                        }
                     }
                 }
             }
         }
 
-        if let Some(flow) = flow.as_ref() {
-            if let Some(line) = format_flow_compact(flow) {
-                let _ = writeln!(out, "{} {}", "Flow:".bright_cyan().bold(), style_flow_line(&line));
+        if !low_confidence || tuning.debug {
+            if let Some(flow) = flow.as_ref() {
+                if let Some(line) = format_flow_compact(flow) {
+                    let _ = writeln!(out, "{} {}", "Flow:".bright_cyan().bold(), style_flow_line(&line));
+                }
             }
         }
 
@@ -424,56 +481,104 @@ fn style_flow_segment(seg: &str) -> String {
     out
 }
 
-fn keyword_context_signals(raw: &str, identifier: Option<&str>, keyword: &str, source_label: &str) -> (Vec<&'static str>, u8) {
-    let mut signals = Vec::new();
+fn keyword_context_signals(raw: &str, identifier: Option<&str>, keyword: &str, source_label: &str) -> (Vec<String>, i32) {
+    let mut signals: Vec<String> = Vec::new();
     let mut score: i32 = 0;
     let lower = raw.to_lowercase();
     let kw = keyword.to_lowercase();
     let source = source_label.to_lowercase();
 
     if lower.contains("authorization") || lower.contains("bearer ") {
-        signals.push("auth-header");
+        signals.push("auth-header".to_string());
         score += 3;
     }
     if lower.contains("x-") || lower.contains("-h ") || lower.contains("header") {
-        signals.push("header");
+        signals.push("header".to_string());
         score += 2;
     }
     if kw.contains("token") || kw.contains("secret") || kw.contains("key") || kw.contains("pass") {
-        signals.push("keyword-hint");
-        score += 2;
+        signals.push("keyword-hint".to_string());
+        score += 1;
     }
     if lower.contains("?" ) && lower.contains("=") {
-        signals.push("url-param");
+        signals.push("url-param".to_string());
         score += 1;
     }
     if let Some(id) = identifier {
         let id_l = id.to_lowercase();
         if id_l.contains("key") || id_l.contains("token") || id_l.contains("secret") || id_l.contains("pass") {
-            signals.push("id-hint");
+            signals.push("id-hint".to_string());
             score += 2;
         }
     }
     if kw.contains("password") || kw.contains("secret") || kw.contains("private") {
-        signals.push("high-risk-keyword");
-        score += 1;
+        signals.push("high-risk-keyword".to_string());
+        score += 2;
     }
     if lower.contains("example") || lower.contains("demo") || lower.contains("test") {
-        signals.push("doc-context");
+        signals.push("doc-context".to_string());
         score -= 2;
     }
     if source.contains("/docs") || source.contains("/examples") || source.contains("/test") {
-        signals.push("doc-path");
+        signals.push("doc-path".to_string());
         score -= 1;
     }
 
     let infra_words = ["/infra", "/k8s", "/kubernetes", "/terraform", "/helm", "/deploy", "/ops", "/ansible"]; 
     if infra_words.iter().any(|w| source.contains(w)) {
-        signals.push("infra-context");
+        signals.push("infra-context".to_string());
         score += 2;
     }
 
-    let confidence = score.clamp(1, 10) as u8;
-    (signals, confidence)
+    (signals, score)
+}
+
+fn apply_keyword_adjustments(
+    signals: &mut Vec<String>,
+    score: &mut i32,
+    keyword: &str,
+    raw_snippet: &str,
+    flow: Option<&crate::heuristics::FlowContext>,
+    stats: Option<&WordStats>,
+) {
+    let lower = raw_snippet.to_lowercase();
+
+    if let Some(flow) = flow {
+        if flow.scope_kind.as_deref() == Some("function") {
+            if let Some(name) = flow.scope_name.as_deref() {
+                if name.eq_ignore_ascii_case(keyword) {
+                    signals.push("function-name".to_string());
+                    *score -= 3;
+                }
+            }
+        }
+    }
+
+    if lower.contains("lexer") || lower.contains("parser") || lower.contains("tokenize") {
+        signals.push("parser-context".to_string());
+        *score -= 2;
+    }
+
+    if let Some(stats) = stats {
+        let occ = stats.positions.len();
+        if occ >= 6 {
+            let call_density = stats.call_sites.len() as f32 / occ as f32;
+            if call_density >= 0.4 {
+                signals.push("tooling-call-density".to_string());
+                *score -= 2;
+            }
+        }
+    }
+
+    let strong = signals.iter().any(|s| {
+        matches!(
+            s.as_str(),
+            "auth-header" | "header" | "id-hint" | "high-risk-keyword"
+        )
+    });
+    if !strong {
+        signals.push("generic-keyword".to_string());
+        *score -= 1;
+    }
 }
 

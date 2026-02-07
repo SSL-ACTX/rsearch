@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use crate::utils::confidence_tier;
 
 pub struct GrammarContext<'a> {
     pub matched: &'a str,
@@ -62,6 +63,10 @@ pub fn generate_story(ctx: &GrammarContext<'_>) -> String {
     if has(ctx.signals, "url-param") { ctx_phrases.push("appears in a URL or parameter".to_string()); }
     if has(ctx.signals, "doc-context") { ctx_phrases.push("located in documentation/examples".to_string()); }
     if has(ctx.signals, "infra-context") { ctx_phrases.push("found in infra/config paths".to_string()); }
+    if has(ctx.signals, "function-name") { ctx_phrases.push("used as a function name".to_string()); }
+    if has(ctx.signals, "tooling-call-density") { ctx_phrases.push("call density resembles language tooling".to_string()); }
+    if has(ctx.signals, "parser-context") { ctx_phrases.push("adjacent to parser/lexer logic".to_string()); }
+    if has(ctx.signals, "generic-keyword") { ctx_phrases.push("generic keyword usage".to_string()); }
 
     if !ctx_phrases.is_empty() {
         parts.push(format!("Context hints: {}.", ctx_phrases.join(", ")));
@@ -72,6 +77,7 @@ pub fn generate_story(ctx: &GrammarContext<'_>) -> String {
     }
 
     // Confidence and guidance (short, actionable)
+    let (badge, tier_label) = confidence_tier(ctx.confidence);
     let guidance = if ctx.confidence >= 8 || sigs.contains("high-risk-keyword") || sigs.contains("id-hint") {
         "High confidence — prioritize this finding for immediate review"
     } else if ctx.confidence >= 5 || sigs.contains("keyword-hint") {
@@ -79,7 +85,7 @@ pub fn generate_story(ctx: &GrammarContext<'_>) -> String {
     } else {
         "Low confidence — informational"
     };
-    parts.push(format!("{} (confidence {}/10).", guidance, ctx.confidence));
+    parts.push(format!("{} {} — {} (confidence {}/10).", badge, tier_label, guidance, ctx.confidence));
 
     // Join into a single paragraph
     let paragraph = parts.join(" ");

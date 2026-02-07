@@ -6,9 +6,10 @@ use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
+use crate::cli::OutputTuning;
 use crate::output::MatchRecord;
 use crate::heuristics::{analyze_flow_context_with_mode, format_context_graph, format_flow_compact, is_likely_code_for_path, FlowMode};
-use crate::utils::{find_preceding_identifier, format_prettified_with_hint, LineFilter};
+use crate::utils::{confidence_tier, find_preceding_identifier, format_prettified_with_hint, LineFilter};
 
 /// Calculates the Shannon Entropy (randomness) of a byte slice.
 pub fn calculate_entropy(data: &[u8]) -> f64 {
@@ -83,6 +84,7 @@ pub fn scan_for_secrets(
     flow_mode: FlowMode,
     line_filter: Option<&LineFilter>,
     request_trace: bool,
+    tuning: &OutputTuning,
 ) -> (String, Vec<MatchRecord>) {
     use owo_colors::OwoColorize;
 
@@ -229,7 +231,17 @@ pub fn scan_for_secrets(
                         None
                     };
 
+                    let (signals, confidence) = context_signals(&raw_context, identifier.as_deref(), &snippet_str, score, source_label);
+                    if confidence < tuning.confidence_floor {
+                        continue;
+                    }
+                    let low_confidence = confidence <= 3;
+
                     if deep_scan {
+                        if low_confidence && !tuning.debug {
+                            let (badge, label) = confidence_tier(confidence);
+                            let _ = writeln!(out, "{} {} confidence ({} /10) — collapsed (use --loud or --mode debug)", badge, label, confidence);
+                        } else {
                         let (count, nearest) = repeat_stats(bytes, candidate_bytes, start);
                         let shape = token_shape_hints(&snippet_str);
                         let shape_str = if shape.is_empty() {
@@ -245,7 +257,6 @@ pub fn scan_for_secrets(
                             .as_deref()
                             .map(|id| format!("; id {}", id))
                             .unwrap_or_default();
-                        let (signals, confidence) = context_signals(&raw_context, identifier.as_deref(), &snippet_str, score, source_label);
                         let sink_hint = sink_provenance_hint(&raw_context);
                         let sink_str = sink_hint
                             .as_deref()
@@ -266,9 +277,10 @@ pub fn scan_for_secrets(
                         } else {
                             format!("signals {}", signals.join(","))
                         };
+                        let (badge, label) = confidence_tier(confidence);
                         let _ = writeln!(
                             out,
-                            "{} appears {} times; nearest repeat {} bytes away; len {}; {}; {}; mix a{}% d{}% s{}%; {}; conf {}/10{}{}{}{}",
+                            "{} appears {} times; nearest repeat {} bytes away; len {}; {}; {}; mix a{}% d{}% s{}%; {}; {} {} (conf {}/10){}{}{}{}",
                             "Story:".bright_cyan().bold(),
                             count.to_string().bright_yellow(),
                             nearest
@@ -282,6 +294,8 @@ pub fn scan_for_secrets(
                             digit_pct.to_string().bright_magenta(),
                             other_pct.to_string().bright_magenta(),
                             signals_str.bright_blue(),
+                            badge,
+                            label,
                             confidence.to_string().bright_red(),
                             sink_str,
                             tension_str,
@@ -299,8 +313,9 @@ pub fn scan_for_secrets(
                             }
                         }
                     }
+                    }
 
-                    if request_trace {
+                    if request_trace && tuning.debug {
                         if let Some(lines) = request_trace_lines(&raw_context) {
                             let _ = writeln!(out, "{}", "Request:".bright_cyan().bold());
                             for line in lines {
@@ -309,11 +324,13 @@ pub fn scan_for_secrets(
                         }
                     }
 
+                    if !low_confidence || tuning.debug {
                         if let Some(flow) = flow.as_ref() {
                             if let Some(line) = format_flow_compact(flow) {
                                 let _ = writeln!(out, "{} {}", "Flow:".bright_cyan().bold(), style_flow_line(&line));
                             }
                         }
+                    }
 
                     let _ = writeln!(out, "{}", "─".repeat(40).dimmed());
 
@@ -383,14 +400,15 @@ pub fn scan_for_requests(
     flow_mode: FlowMode,
     line_filter: Option<&LineFilter>,
     source_path: Option<&Path>,
+    tuning: &OutputTuning,
 ) -> (String, Vec<MatchRecord>) {
     use owo_colors::OwoColorize;
 
     let mut out = String::new();
     let mut records: Vec<MatchRecord> = Vec::new();
     let mut header_written = false;
-    let mut obf_emitted = false;
     let obf_signatures = detect_obfuscation_signatures(bytes);
+    let render = tuning.debug;
 
     if let Some(path) = source_path {
         if path_has_component(path, ".git") {
@@ -401,7 +419,25 @@ pub fn scan_for_requests(
         }
     }
 
-    let mut ensure_header = |buffer: &mut String, records: &mut Vec<MatchRecord>| {
+    if !obf_signatures.is_empty() {
+        for sig in &obf_signatures {
+            records.push(MatchRecord {
+                source: source_label.to_string(),
+                kind: "obfuscation-signature".to_string(),
+                matched: sig.clone(),
+                line: 0,
+                col: 0,
+                entropy: None,
+                context: "request-trace".to_string(),
+                identifier: None,
+            });
+        }
+    }
+
+    let mut ensure_header = |buffer: &mut String| {
+        if !render {
+            return;
+        }
         if !header_written {
             let _ = writeln!(
                 buffer,
@@ -411,26 +447,13 @@ pub fn scan_for_requests(
             let _ = writeln!(buffer, "{}", "━".repeat(60).dimmed());
             header_written = true;
         }
-        if !obf_emitted && !obf_signatures.is_empty() {
+        if !obf_signatures.is_empty() {
             let _ = writeln!(
                 buffer,
                 "{} {}",
                 "Obfuscation:".bright_cyan().bold(),
                 obf_signatures.join(", ").bright_magenta()
             );
-            for sig in &obf_signatures {
-                records.push(MatchRecord {
-                    source: source_label.to_string(),
-                    kind: "obfuscation-signature".to_string(),
-                    matched: sig.clone(),
-                    line: 0,
-                    col: 0,
-                    entropy: None,
-                    context: "request-trace".to_string(),
-                    identifier: None,
-                });
-            }
-            obf_emitted = true;
         }
     };
 
@@ -477,48 +500,50 @@ pub fn scan_for_requests(
         }
 
         if let Some(lines) = request_trace_lines(&raw_snippet) {
-            ensure_header(&mut out, &mut records);
-            let _ = writeln!(
-                out,
-                "{}[L:{} C:{} Request:{}]{}",
-                "[".dimmed(),
-                line.bright_magenta(),
-                col.bright_blue(),
-                label.bright_yellow().bold(),
-                "]".dimmed()
-            );
+            if render {
+                ensure_header(&mut out);
+                let _ = writeln!(
+                    out,
+                    "{}[L:{} C:{} Request:{}]{}",
+                    "[".dimmed(),
+                    line.bright_magenta(),
+                    col.bright_blue(),
+                    label.bright_yellow().bold(),
+                    "]".dimmed()
+                );
 
-            let pretty = format_prettified_with_hint(&raw_snippet, label, Some(source_label));
-            let _ = writeln!(out, "{}", pretty);
+                let pretty = format_prettified_with_hint(&raw_snippet, label, Some(source_label));
+                let _ = writeln!(out, "{}", pretty);
 
-            let _ = writeln!(out, "{}", "Request:".bright_cyan().bold());
-            for line in lines {
-                let _ = writeln!(out, "{}", line);
-            }
+                let _ = writeln!(out, "{}", "Request:".bright_cyan().bold());
+                for line in lines {
+                    let _ = writeln!(out, "{}", line);
+                }
 
-            let flow = if flow_mode != FlowMode::Off {
-                analyze_flow_context_with_mode(bytes, pos, flow_mode)
-            } else {
-                None
-            };
+                let flow = if flow_mode != FlowMode::Off {
+                    analyze_flow_context_with_mode(bytes, pos, flow_mode)
+                } else {
+                    None
+                };
 
-            if let Some(flow) = flow.as_ref() {
-                if let Some(lines) = format_context_graph(flow, None) {
-                    let _ = writeln!(out, "{}", "Context:".bright_cyan().bold());
-                    for line in lines {
-                        let styled = style_context_line(&line);
-                        let _ = writeln!(out, "{}", styled);
+                if let Some(flow) = flow.as_ref() {
+                    if let Some(lines) = format_context_graph(flow, None) {
+                        let _ = writeln!(out, "{}", "Context:".bright_cyan().bold());
+                        for line in lines {
+                            let styled = style_context_line(&line);
+                            let _ = writeln!(out, "{}", styled);
+                        }
                     }
                 }
-            }
 
-            if let Some(flow) = flow.as_ref() {
-                if let Some(line) = format_flow_compact(flow) {
-                    let _ = writeln!(out, "{} {}", "Flow:".bright_cyan().bold(), style_flow_line(&line));
+                if let Some(flow) = flow.as_ref() {
+                    if let Some(line) = format_flow_compact(flow) {
+                        let _ = writeln!(out, "{} {}", "Flow:".bright_cyan().bold(), style_flow_line(&line));
+                    }
                 }
-            }
 
-            let _ = writeln!(out, "{}", "─".repeat(40).dimmed());
+                let _ = writeln!(out, "{}", "─".repeat(40).dimmed());
+            }
 
             records.push(MatchRecord {
                 source: source_label.to_string(),
@@ -836,7 +861,7 @@ pub fn adaptive_confidence_entropy(
         score -= 1;
     }
 
-    let confidence = score.clamp(1, 10) as u8;
+    let confidence = score.clamp(0, 10) as u8;
     (signals, confidence)
 }
 

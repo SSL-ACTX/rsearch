@@ -53,6 +53,7 @@ pub fn run_analysis(
 
     let tag_set = parse_emit_tags(&cli.emit_tags);
     let flow_mode = flow_mode_for_source(source_path, source_hint, cli.flow_scan, bytes);
+    let tuning = cli.output_tuning();
     let line_filter = diff_map
         .and_then(|map| source_path.and_then(|p| map.get(p)))
         .map(|ranges| LineFilter::new(ranges.clone()));
@@ -66,6 +67,7 @@ pub fn run_analysis(
             cli.deep_scan,
             flow_mode,
             line_filter.as_ref(),
+            &tuning,
         );
         file_output.push_str(&s);
         records.append(&mut r);
@@ -82,6 +84,7 @@ pub fn run_analysis(
             flow_mode,
             line_filter.as_ref(),
             cli.request_trace,
+            &tuning,
         );
         file_output.push_str(&s);
         records.append(&mut r);
@@ -95,6 +98,7 @@ pub fn run_analysis(
             flow_mode,
             line_filter.as_ref(),
             source_path,
+            &tuning,
         );
         file_output.push_str(&s);
         records.append(&mut r);
@@ -1848,6 +1852,16 @@ fn suppression_signals(rec: &MatchRecord) -> Option<(Vec<String>, u8, u16)> {
         if weak.iter().any(|k| rec.matched.to_lowercase().contains(k)) && !ctx.contains("auth") {
             reasons.push("generic keyword".to_string());
             score += 1;
+        }
+        let matched = rec.matched.to_lowercase();
+        let fn_sig = format!("function {}", matched);
+        if ctx.contains(&fn_sig) {
+            reasons.push("function name usage".to_string());
+            score += 2;
+        }
+        if ctx.contains("lexer") || ctx.contains("parser") || ctx.contains("tokenize") {
+            reasons.push("parser/lexer context".to_string());
+            score += 2;
         }
     }
 

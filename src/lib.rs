@@ -16,6 +16,7 @@ mod tests {
     use super::heuristics::FlowMode;
     use super::scan::{build_exclude_matcher, is_excluded_path, Heatmap, Lineage, parse_unified_diff};
     use super::utils::find_preceding_identifier;
+    use super::cli::OutputTuning;
     use std::path::Path;
 
     #[test]
@@ -53,7 +54,8 @@ mod tests {
     fn process_search_records() {
         let data = b"let token = \"secret123\";\n";
         let keywords = vec!["token".to_string()];
-        let (out, records) = process_search(data, "test.rs", &keywords, 10, false, FlowMode::Off, None);
+        let tuning = OutputTuning::debug();
+        let (out, records) = process_search(data, "test.rs", &keywords, 10, false, FlowMode::Off, None, &tuning);
         assert!(out.contains("token"));
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].kind, "keyword");
@@ -63,18 +65,20 @@ mod tests {
     fn deep_scan_story_includes_counts() {
         let data = b"fn main(){encrypt(x); encrypt(y);} encrypt(z);";
         let keywords = vec!["encrypt".to_string()];
-        let (out, _records) = process_search(data, "test.rs", &keywords, 10, true, FlowMode::Heuristic, None);
+        let tuning = OutputTuning::debug();
+        let (out, _records) = process_search(data, "test.rs", &keywords, 10, true, FlowMode::Heuristic, None, &tuning);
         assert!(out.contains("Story:"));
         assert!(!out.contains("Source:"));
         assert!(out.contains("Flow:"));
-        assert!(out.contains("scope "));
+        assert!(out.contains("scope"));
     }
 
     #[test]
     fn entropy_ignores_url_context() {
         let css = b"@font-face{src:url(https://fonts.gstatic.com/s/roboto/v50/ABCDEFGHIJKLmnopqrstuvwxyz0123456789-XYZ.woff2) format('woff2');}";
         let tags = HashSet::new();
-        let (_out, records) = scan_for_secrets("test.css", css, 4.0, 40, &tags, false, FlowMode::Off, None, false);
+        let tuning = OutputTuning::debug();
+        let (_out, records) = scan_for_secrets("test.css", css, 4.0, 40, &tags, false, FlowMode::Off, None, false, &tuning);
         assert!(records.is_empty());
     }
 
@@ -83,7 +87,8 @@ mod tests {
         let css = b"@font-face{src:url(https://fonts.gstatic.com/s/roboto/v50/ABCDEFGHIJKLmnopqrstuvwxyz0123456789-XYZ.woff2) format('woff2');}";
         let mut tags = HashSet::new();
         tags.insert("url".to_string());
-        let (_out, records) = scan_for_secrets("test.css", css, 4.0, 40, &tags, false, FlowMode::Off, None, false);
+        let tuning = OutputTuning::debug();
+        let (_out, records) = scan_for_secrets("test.css", css, 4.0, 40, &tags, false, FlowMode::Off, None, false, &tuning);
         assert!(records.iter().any(|r| r.kind == "url"));
     }
 
@@ -158,7 +163,8 @@ mod tests {
     #[test]
     fn request_trace_standalone_detects_fetch() {
         let js = b"async function run(){const url=apiBase+\"/v1\";return fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:'x'})}";
-        let (out, records) = scan_for_requests("test.js", js, 80, FlowMode::Off, None, Some(Path::new("test.js")));
+        let tuning = OutputTuning::debug();
+        let (out, records) = scan_for_requests("test.js", js, 80, FlowMode::Off, None, Some(Path::new("test.js")), &tuning);
         assert!(out.contains("Request tracing"));
         assert!(out.contains("Request:"));
         assert!(!records.is_empty());

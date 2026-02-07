@@ -7,6 +7,16 @@ pub fn set_color_enabled(enabled: bool) {
     COLOR_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
+pub fn confidence_tier(confidence: u8) -> (&'static str, &'static str) {
+    if confidence >= 7 {
+        ("🔴", "loud")
+    } else if confidence >= 4 {
+        ("🟡", "normal")
+    } else {
+        ("⚫", "quiet")
+    }
+}
+
 fn colors_enabled() -> bool {
     COLOR_ENABLED.load(Ordering::Relaxed)
 }

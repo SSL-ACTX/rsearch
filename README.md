@@ -57,6 +57,18 @@ At minimum, provide one or more targets (`-t`) and choose a scanning mode (`--en
 argus -t <path_or_url> [OPTIONS]
 ```
 
+### Personas (quiet vs debug)
+
+argus ships with two output personas that control noise, story collapsing, and request-trace verbosity:
+
+- **Scan (quiet/CI-safe)**: `--mode scan` or `--quiet` (default)
+  - Collapses low-confidence and doc-context stories.
+  - Suppresses request-trace details in terminal output.
+- **Debug (loud)**: `--mode debug` or `--loud`
+  - Expands story blocks and prints request-trace details.
+
+You can override the minimum confidence shown with `--confidence-floor <0-10>` and expand repeated stories with `--expand`.
+
 ### Common workflows
 
 **1. Enterprise Secret Scanning (High Precision)**
@@ -85,6 +97,12 @@ Enable all heuristics, flow analysis, and request tracing for a comprehensive re
 
 ```bash
 argus -t . -k "token" --entropy --deep-scan --flow-scan --request-trace
+```
+
+**5. Quiet CI Scan (Noise-Reduced)**
+
+```bash
+argus -t . -k "token" --deep-scan --flow-scan --request-trace --quiet --confidence-floor 4
 ```
 
 ---
