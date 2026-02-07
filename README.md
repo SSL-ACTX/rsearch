@@ -157,6 +157,15 @@ pip install -e ".[test]"
 pytest python/tests
 ```
 
+### Release to PyPI
+
+Push a version tag (e.g., v1.1.0) to trigger the publish workflow:
+
+```bash
+git tag v1.1.0
+git push origin v1.1.0
+```
+
 Example (maturin-style usage):
 
 ```python
