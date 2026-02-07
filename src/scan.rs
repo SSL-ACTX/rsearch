@@ -124,6 +124,10 @@ pub fn run_analysis(
         }
     };
 
+    if records.is_empty() {
+        return (file_output, records);
+    }
+
     let endpoint_hints = extract_attack_surface_hints(bytes);
     let attack_links = build_attack_surface_links(&records, &endpoint_hints);
     if !records.is_empty() && endpoint_hints.iter().any(|h| h.class == "public") {

@@ -69,6 +69,12 @@ argus ships with two output personas that control noise, story collapsing, and r
 
 You can override the minimum confidence shown with `--confidence-floor <0-10>` and expand repeated stories with `--expand`.
 
+**Key output controls**
+- `--mode scan|debug` — select the output persona.
+- `--quiet` / `--loud` — aliases for scan/debug personas.
+- `--confidence-floor <0-10>` — drop findings below this confidence.
+- `--expand` — expand repeated story blocks.
+
 ### Common workflows
 
 **1. Enterprise Secret Scanning (High Precision)**
