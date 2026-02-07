@@ -20,6 +20,8 @@ jobs:
           - os: ubuntu-22.04
             platform: manylinux_aarch64
             target: aarch64-unknown-linux-gnu
+            ring_pre_generate_asm: "1"
+            cflags_aarch64: "-march=armv8-a"
           - os: macos-13
             platform: macos_x86_64
             target: x86_64-apple-darwin
@@ -40,6 +42,9 @@ jobs:
 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
+        env:
+          RING_PREGENERATE_ASM: ${{ matrix.ring_pre_generate_asm }}
+          CFLAGS_aarch64_unknown_linux_gnu: ${{ matrix.cflags_aarch64 }}
         with:
           command: build
           args: --release --out dist -F python-ffi
